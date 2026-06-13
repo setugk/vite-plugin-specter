@@ -15,7 +15,7 @@ export function specter(options: SpecterOptions = {}): Plugin {
     apply: 'serve',
     transformIndexHtml(html) {
       const script = getClientScript(options);
-      return html.replace('</body>', `<script>\n${script}\n</script>\n</body>`);
+      return html.replace('</body>', () => `<script>\n${script}\n</script>\n</body>`);
     },
   };
 }
