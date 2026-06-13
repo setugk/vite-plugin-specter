@@ -1,6 +1,6 @@
 {
   "name": "vite-plugin-specter",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Dev-only element inspector overlay for Vite projects. Hover any element to see its styles, component name, and spacing — then copy to clipboard for AI assistants.",
   "type": "module",
   "main": "./dist/index.cjs",

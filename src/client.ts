@@ -383,6 +383,8 @@ export function getClientScript(options: SpecterOptions): string {
     return {
       el: el,
       tag: el.tagName.toLowerCase(),
+      id: el.id || null,
+      classes: Array.prototype.slice.call(el.classList).filter(function (c) { return c.indexOf('__specter') !== 0; }),
       component: getComponentName(el),
       styleKey: el.dataset ? el.dataset.style : null,
       width: Math.round(rect.width),
@@ -409,8 +411,10 @@ export function getClientScript(options: SpecterOptions): string {
   function buildHumanDisplay(data) {
     var h = '';
     var id = '<span style="color:#fff">&lt;' + data.tag + '&gt;</span>';
+    if (data.id) id += '<span style="color:#F0B86E">#' + esc(data.id) + '</span>';
+    if (data.classes.length) id += '<span style="color:#5FD3C0">.' + data.classes.map(esc).join('.') + '</span>';
     if (data.component) id += ' <span style="color:#E0A3F5;font-weight:600">' + esc(data.component) + '</span>';
-    if (data.styleKey) id += ' <span style="color:' + LABEL + '">.' + esc(data.styleKey) + '</span>';
+    if (data.styleKey) id += ' <span style="color:' + LABEL + '">[' + esc(data.styleKey) + ']</span>';
     id += ' <span style="color:' + LABEL + '">' + data.width + '×' + data.height + '</span>';
     h += '<div style="margin-bottom:8px">' + id + '</div>';
     if (data.text) h += '<div style="color:' + LABEL + ';font-style:italic;margin-bottom:8px">"' + esc(data.text) + (data.textTrunc ? '…' : '') + '"</div>';
@@ -433,8 +437,10 @@ export function getClientScript(options: SpecterOptions): string {
   function buildLLMClipboard(data) {
     var lines = ['[Specter]'];
     var head = '<' + data.tag + '>';
+    if (data.id) head += '#' + data.id;
+    if (data.classes.length) head += '.' + data.classes.join('.');
     if (data.component) head += ' ' + data.component;
-    if (data.styleKey) head += ' .' + data.styleKey;
+    if (data.styleKey) head += ' [' + data.styleKey + ']';
     head += ' ' + data.width + '×' + data.height;
     lines.push(head);
     if (data.text) lines.push('"' + data.text + (data.textTrunc ? '…' : '') + '"');
