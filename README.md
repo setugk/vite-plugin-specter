@@ -1,8 +1,8 @@
 # Specter
 
-**A dev-only element inspector overlay for Vite projects.**
+**Hover any element on your dev site. See its styles. Copy to AI.**
 
-Specter is a Vite plugin that adds an element inspector to your dev server. Toggle it on, hover any element to see its styles, component name, and spacing. Copy with one shortcut and paste into your AI assistant for one-shot edits.
+Specter is a Vite plugin that adds an element inspector overlay to your dev server. Toggle it on, hover any element to see its styles, component name, and spacing. Copy with one shortcut and paste into your AI assistant for one-shot edits. Specter is automatically stripped from production builds.
 
 ## Requirements
 
