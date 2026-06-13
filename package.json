@@ -1,5 +1,5 @@
 {
-  "name": "vite-plugin-inspekt",
+  "name": "vite-plugin-specter",
   "version": "0.1.0",
   "description": "Dev-only element inspector overlay for Vite projects. Hover any element to see its styles, component name, and spacing — then copy to clipboard for AI assistants.",
   "type": "module",
@@ -14,11 +14,14 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "extension"
   ],
   "scripts": {
-    "build": "tsup",
-    "dev": "tsup --watch"
+    "build": "tsup && node scripts/build-client.mjs && node scripts/build-extension.mjs",
+    "dev": "tsup --watch",
+    "gen-icons": "node scripts/gen-icons.mjs",
+    "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
     "vite": ">=4.0.0"

@@ -1,16 +1,19 @@
-import type { InspektOptions } from './index.js';
+import type { SpecterOptions } from './index.js';
 
-export function getClientScript(options: InspektOptions): string {
-  const activateShortcut = options.shortcuts?.activate ?? 'ctrl+alt+period';
+export function getClientScript(options: SpecterOptions): string {
+  const activateShortcut = options.shortcuts?.activate ?? 'ctrl+alt+z';
   return `(function() {
   'use strict';
+  if (window.__specter) return; window.__specter = true;
 
   // ─── State ────────────────────────────────────────────────────────────────
   let fiActive = false;
-  let measureMode = false;   // toggled by tapping Option
-  let pinEl = null;          // measure-from pinned element
+  let measureMode = false;
+  let pinEl = null;
   let lastHovered = null;
   let optionHeld = false;
+  const selectedEls = [];
+  const selectedBadges = [];
 
   const ACTIVATE = ${JSON.stringify(activateShortcut)};
 
@@ -36,7 +39,7 @@ export function getClientScript(options: InspektOptions): string {
   });
   document.body.appendChild(tooltip);
 
-  // Measure overlay canvas-like div
+  // Measure overlay
   const measureOverlay = document.createElement('div');
   Object.assign(measureOverlay.style, {
     position: 'fixed',
@@ -104,18 +107,24 @@ export function getClientScript(options: InspektOptions): string {
     expandPill();
   });
   pill.addEventListener('mouseleave', () => {
-    if (!pinEl) collapsePill();
+    if (selectedEls.length === 0 && !pinEl) collapsePill();
   });
 
-  function expandPill() {
-    pill.style.maxWidth = '600px';
+  function expandPill(text) {
+    pill.style.maxWidth = '700px';
     pillText.style.visibility = 'visible';
     pillClose.style.visibility = 'visible';
-    const mode = measureMode ? 'Measure' : 'Properties';
-    const shortcuts = measureMode
-      ? 'Hover → distances  M → pin  Cmd+C → copy  Option → toggle mode'
-      : 'Hover → inspect  Cmd+C → copy  Option → measure mode';
-    pillText.textContent = \`\${mode} · \${shortcuts}\`;
+    if (text) {
+      pillText.textContent = text;
+      return;
+    }
+    if (selectedEls.length > 0) {
+      pillText.textContent = \`\${selectedEls.length} selected · Cmd+C → copy all · Esc → clear\`;
+    } else if (measureMode) {
+      pillText.textContent = 'Measure · hover → distances · M → pin · Cmd+C → copy · Option → toggle mode';
+    } else {
+      pillText.textContent = 'Properties · hover → inspect · P → pick · Cmd+C → copy · Option → measure mode';
+    }
   }
 
   function collapsePill() {
@@ -124,14 +133,20 @@ export function getClientScript(options: InspektOptions): string {
     pillClose.style.visibility = 'hidden';
   }
 
+  function updatePillForSelection() {
+    if (selectedEls.length > 0) {
+      expandPill();
+    } else if (!pill.matches(':hover')) {
+      collapsePill();
+    }
+  }
+
   function flashMode() {
-    const mode = measureMode ? '⬡ Measure mode' : '◉ Properties mode';
-    pillText.style.visibility = 'visible';
-    pillClose.style.visibility = 'visible';
-    pill.style.maxWidth = '600px';
-    pillText.textContent = mode;
+    const text = measureMode ? '⬡ Measure mode' : '◉ Properties mode';
+    expandPill(text);
     setTimeout(() => {
-      if (!pill.matches(':hover') && !pinEl) collapsePill();
+      if (!pill.matches(':hover') && selectedEls.length === 0 && !pinEl) collapsePill();
+      else if (selectedEls.length > 0 || pinEl) expandPill();
     }, 1200);
   }
 
@@ -146,19 +161,17 @@ export function getClientScript(options: InspektOptions): string {
   function deactivate() {
     fiActive = false;
     measureMode = false;
-    pinEl = null;
-    lastHovered = null;
     optionHeld = false;
+    lastHovered = null;
+    clearSelection();
+    clearPin();
     pill.style.display = 'none';
     hideTooltip();
     clearMeasureOverlay();
-    clearPin();
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
-  function hideTooltip() {
-    tooltip.style.display = 'none';
-  }
+  function hideTooltip() { tooltip.style.display = 'none'; }
 
   function positionTooltip(x, y) {
     tooltip.style.display = 'block';
@@ -184,11 +197,9 @@ export function getClientScript(options: InspektOptions): string {
   function parseColor(str) {
     if (!str || str === 'transparent' || str === 'rgba(0, 0, 0, 0)') return null;
     const m = str.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)/);
-    if (!m) return { raw: str, hex: str, alpha: 1 };
+    if (!m) return { hex: str, alpha: 1 };
     const [, r, g, b, a = '1'] = m;
-    const alpha = parseFloat(a);
-    const hex = toHex(r, g, b);
-    return { raw: str, hex, alpha };
+    return { hex: toHex(r, g, b), alpha: parseFloat(a) };
   }
 
   function colorLabel(str) {
@@ -199,7 +210,6 @@ export function getClientScript(options: InspektOptions): string {
   }
 
   function getComponentName(el) {
-    // React fiber
     for (const key of Object.keys(el)) {
       if (key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')) {
         let fiber = el[key];
@@ -210,7 +220,6 @@ export function getClientScript(options: InspektOptions): string {
         }
       }
     }
-    // Vue 3
     if (el.__vueParentComponent) {
       const name = el.__vueParentComponent.type?.name || el.__vueParentComponent.type?.__name;
       if (name && name.length > 3) return name;
@@ -226,10 +235,9 @@ export function getClientScript(options: InspektOptions): string {
         try { rules = sheet.cssRules; } catch { continue; }
         if (!rules) continue;
         for (const rule of rules) {
-          if (rule.type !== 1) continue; // CSSStyleRule only
+          if (rule.type !== 1) continue;
           const sel = rule.selectorText;
           if (!sel) continue;
-          // Skip universal/reset selectors
           if (/^[*,]|^:root|^html|^body$|^::before|^::after/.test(sel.trim())) continue;
           try {
             if (el.matches(sel)) {
@@ -261,68 +269,47 @@ export function getClientScript(options: InspektOptions): string {
     return parts.join(' > ');
   }
 
-  // ─── Build info text ──────────────────────────────────────────────────────
+  // ─── Build info ───────────────────────────────────────────────────────────
   function buildInfo(el) {
     const cs = getComputedStyle(el);
     const rect = el.getBoundingClientRect();
-    const w = Math.round(rect.width);
-    const h = Math.round(rect.height);
     const tag = el.tagName.toLowerCase();
     const comp = getComponentName(el);
     const dataStyle = el.dataset?.style;
-
     const lines = [];
 
-    // Header line
     let header = \`<\${tag}>\`;
     if (comp) header += \` \${comp}\`;
     if (dataStyle) header += \` [\${dataStyle}]\`;
-    header += \` \${w}×\${h}\`;
+    header += \` \${Math.round(rect.width)}×\${Math.round(rect.height)}\`;
     lines.push(header);
 
-    // Text content
     const text = el.textContent?.trim().slice(0, 40);
     if (text) lines.push(\`"\${text}\${el.textContent.trim().length > 40 ? '…' : ''}"\`);
 
-    // Font
     const ff = cs.fontFamily.split(',')[0].replace(/['"]/g, '').trim();
-    const fw = cs.fontWeight;
-    const fs = cs.fontSize;
-    const lh = cs.lineHeight;
-    lines.push(\`font: \${ff} \${fw} \${fs}/\${lh}\`);
+    lines.push(\`font: \${ff} \${cs.fontWeight} \${cs.fontSize}/\${cs.lineHeight}\`);
 
-    // Color
     const color = colorLabel(cs.color);
     if (color) lines.push(\`color: \${color}\`);
 
-    // Background
     const bg = colorLabel(cs.backgroundColor);
     if (bg) lines.push(\`bg: \${bg}\`);
 
-    // Padding
-    const pt = cs.paddingTop, pr = cs.paddingRight, pb = cs.paddingBottom, pl = cs.paddingLeft;
-    if ([pt,pr,pb,pl].some(v => v !== '0px')) {
-      lines.push(\`padding: \${pt} \${pr} \${pb} \${pl}\`);
-    }
+    const [pt, pr, pb, pl] = [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft];
+    if ([pt, pr, pb, pl].some(v => v !== '0px')) lines.push(\`padding: \${pt} \${pr} \${pb} \${pl}\`);
 
-    // Margin
-    const mt = cs.marginTop, mr = cs.marginRight, mb = cs.marginBottom, ml = cs.marginLeft;
-    if ([mt,mr,mb,ml].some(v => v !== '0px')) {
-      lines.push(\`margin: \${mt} \${mr} \${mb} \${ml}\`);
-    }
+    const [mt, mr, mb, ml] = [cs.marginTop, cs.marginRight, cs.marginBottom, cs.marginLeft];
+    if ([mt, mr, mb, ml].some(v => v !== '0px')) lines.push(\`margin: \${mt} \${mr} \${mb} \${ml}\`);
 
-    // Border radius
-    if (cs.borderRadius && cs.borderRadius !== '0px') {
-      lines.push(\`radius: \${cs.borderRadius}\`);
-    }
+    if (cs.borderRadius && cs.borderRadius !== '0px') lines.push(\`radius: \${cs.borderRadius}\`);
 
-    // Display (only non-trivial)
     const disp = cs.display;
-    if (disp === 'flex' || disp === 'grid' || disp === 'inline-flex' || disp === 'inline-grid') {
-      let dispLine = \`display: \${disp}\`;
-      if (cs.gap && cs.gap !== 'normal') dispLine += \`  gap: \${cs.gap}\`;
-      if (disp.includes('flex') && cs.flexDirection !== 'row') dispLine += \`  dir: \${cs.flexDirection}\`;
-      lines.push(dispLine);
+    if (['flex','grid','inline-flex','inline-grid'].includes(disp)) {
+      let d = \`display: \${disp}\`;
+      if (cs.gap && cs.gap !== 'normal') d += \`  gap: \${cs.gap}\`;
+      if (disp.includes('flex') && cs.flexDirection !== 'row') d += \`  dir: \${cs.flexDirection}\`;
+      lines.push(d);
     }
 
     return lines.join('\\n');
@@ -331,12 +318,73 @@ export function getClientScript(options: InspektOptions): string {
   function buildCopyText(el) {
     const info = buildInfo(el);
     const rules = getMatchingRules(el);
-    const selector = getSelector(el);
-    let out = \`[Inspekt]\\n\${info}\\n  selector: \${selector}\`;
-    if (rules.length) {
-      out += \`\\n\\n--- CSS Rules ---\\n\${rules.join('\\n\\n')}\`;
-    }
+    let out = \`[Specter]\\n\${info}\\n  selector: \${getSelector(el)}\`;
+    if (rules.length) out += \`\\n\\n--- CSS Rules ---\\n\${rules.join('\\n\\n')}\`;
     return out;
+  }
+
+  function buildMultiSelectCopyText() {
+    return selectedEls.map((el, i) => {
+      const info = buildInfo(el);
+      const rules = getMatchingRules(el);
+      let out = \`[Inspekt \${i + 1}/\${selectedEls.length}]\\n\${info}\\n  selector: \${getSelector(el)}\`;
+      if (rules.length) out += \`\\n\\n--- CSS Rules ---\\n\${rules.join('\\n\\n')}\`;
+      return out;
+    }).join('\\n\\n' + '─'.repeat(40) + '\\n\\n');
+  }
+
+  // ─── Multi-select ─────────────────────────────────────────────────────────
+  function makeBadge(el, index) {
+    const rect = el.getBoundingClientRect();
+    const badge = document.createElement('div');
+    badge.textContent = String(index + 1);
+    Object.assign(badge.style, {
+      position: 'fixed',
+      left: rect.left + 'px',
+      top: rect.top + 'px',
+      width: '18px',
+      height: '18px',
+      background: '#9b59b6',
+      color: '#fff',
+      fontSize: '10px',
+      fontWeight: '700',
+      fontFamily: 'ui-monospace, monospace',
+      borderRadius: '50%',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: '2147483644',
+      pointerEvents: 'none',
+      boxShadow: '0 1px 4px rgba(0,0,0,0.4)',
+      transform: 'translate(-50%, -50%)',
+    });
+    document.body.appendChild(badge);
+    return badge;
+  }
+
+  function rebuildBadges() {
+    selectedBadges.forEach(b => b.remove());
+    selectedBadges.length = 0;
+    selectedEls.forEach((el, i) => {
+      selectedBadges.push(makeBadge(el, i));
+    });
+  }
+
+  function toggleSelection(el) {
+    const idx = selectedEls.indexOf(el);
+    if (idx >= 0) {
+      selectedEls.splice(idx, 1);
+    } else {
+      selectedEls.push(el);
+    }
+    rebuildBadges();
+    updatePillForSelection();
+  }
+
+  function clearSelection() {
+    selectedEls.length = 0;
+    selectedBadges.forEach(b => b.remove());
+    selectedBadges.length = 0;
   }
 
   // ─── Measure mode ─────────────────────────────────────────────────────────
@@ -360,23 +408,17 @@ export function getClientScript(options: InspektOptions): string {
       background: '#e53e3e',
       pointerEvents: 'none',
     });
-
     if (isHoriz) {
-      const left = Math.min(x1, x2);
-      const width = Math.abs(x2 - x1);
       Object.assign(line.style, {
-        left: left + 'px', top: (y1 - 0.5) + 'px',
-        width: width + 'px', height: '1px',
+        left: Math.min(x1, x2) + 'px', top: (y1 - 0.5) + 'px',
+        width: Math.abs(x2 - x1) + 'px', height: '1px',
       });
     } else {
-      const top = Math.min(y1, y2);
-      const height = Math.abs(y2 - y1);
       Object.assign(line.style, {
-        left: (x1 - 0.5) + 'px', top: top + 'px',
-        width: '1px', height: height + 'px',
+        left: (x1 - 0.5) + 'px', top: Math.min(y1, y2) + 'px',
+        width: '1px', height: Math.abs(y2 - y1) + 'px',
       });
     }
-
     measureOverlay.appendChild(line);
 
     if (label && label !== '0px') {
@@ -394,12 +436,12 @@ export function getClientScript(options: InspektOptions): string {
         whiteSpace: 'nowrap',
       });
       if (isHoriz) {
-        const cx = (Math.min(x1,x2) + Math.max(x1,x2)) / 2;
+        const cx = (Math.min(x1, x2) + Math.max(x1, x2)) / 2;
         lbl.style.left = cx + 'px';
         lbl.style.top = (y1 - 14) + 'px';
         lbl.style.transform = 'translateX(-50%)';
       } else {
-        const cy = (Math.min(y1,y2) + Math.max(y1,y2)) / 2;
+        const cy = (Math.min(y1, y2) + Math.max(y1, y2)) / 2;
         lbl.style.left = (x1 + 6) + 'px';
         lbl.style.top = cy + 'px';
         lbl.style.transform = 'translateY(-50%)';
@@ -413,10 +455,8 @@ export function getClientScript(options: InspektOptions): string {
     const hl = document.createElement('div');
     Object.assign(hl.style, {
       position: 'fixed',
-      left: rect.left + 'px',
-      top: rect.top + 'px',
-      width: rect.width + 'px',
-      height: rect.height + 'px',
+      left: rect.left + 'px', top: rect.top + 'px',
+      width: rect.width + 'px', height: rect.height + 'px',
       border: \`2px solid \${color}\`,
       borderRadius: '2px',
       pointerEvents: 'none',
@@ -430,77 +470,54 @@ export function getClientScript(options: InspektOptions): string {
   function measureToNeighbor(targetEl) {
     clearMeasureOverlay();
     const tr = targetEl.getBoundingClientRect();
-
-    // Walk up to find siblings or parent
     let measured = false;
     let cur = targetEl.parentElement;
+
     for (let depth = 0; depth < 3 && cur && !measured; depth++) {
       const children = Array.from(cur.children).filter(c => c !== targetEl && c.offsetParent !== null);
       if (children.length === 0) { cur = cur.parentElement; continue; }
 
-      // Find closest sibling above, below, left, right
-      let closest = { top: null, bottom: null, left: null, right: null };
-      let gaps = { top: Infinity, bottom: Infinity, left: Infinity, right: Infinity };
+      const closest = { top: null, bottom: null, left: null, right: null };
+      const gaps = { top: Infinity, bottom: Infinity, left: Infinity, right: Infinity };
 
       for (const sib of children) {
         const sr = sib.getBoundingClientRect();
-        // Above: sib bottom <= target top
         if (sr.bottom <= tr.top) {
           const g = tr.top - sr.bottom;
           if (g < gaps.top) { gaps.top = g; closest.top = sib; }
         }
-        // Below: sib top >= target bottom
         if (sr.top >= tr.bottom) {
           const g = sr.top - tr.bottom;
           if (g < gaps.bottom) { gaps.bottom = g; closest.bottom = sib; }
         }
-        // Left: sib right <= target left
         if (sr.right <= tr.left) {
           const g = tr.left - sr.right;
           if (g < gaps.left) { gaps.left = g; closest.left = sib; }
         }
-        // Right: sib left >= target right
         if (sr.left >= tr.right) {
           const g = sr.left - tr.right;
           if (g < gaps.right) { gaps.right = g; closest.right = sib; }
         }
       }
 
-      // If we have siblings in at least one direction, draw and stop
       if (closest.top || closest.bottom || closest.left || closest.right) {
         measured = true;
         const cx = (tr.left + tr.right) / 2;
         const cy = (tr.top + tr.bottom) / 2;
-
-        if (closest.top) {
-          const sr = closest.top.getBoundingClientRect();
-          drawLine(cx, sr.bottom, cx, tr.top, Math.round(gaps.top) + 'px');
-        }
-        if (closest.bottom) {
-          const sr = closest.bottom.getBoundingClientRect();
-          drawLine(cx, tr.bottom, cx, sr.top, Math.round(gaps.bottom) + 'px');
-        }
-        if (closest.left) {
-          const sr = closest.left.getBoundingClientRect();
-          drawLine(sr.right, cy, tr.left, cy, Math.round(gaps.left) + 'px');
-        }
-        if (closest.right) {
-          const sr = closest.right.getBoundingClientRect();
-          drawLine(tr.right, cy, sr.left, cy, Math.round(gaps.right) + 'px');
-        }
+        if (closest.top) drawLine(cx, closest.top.getBoundingClientRect().bottom, cx, tr.top, Math.round(gaps.top) + 'px');
+        if (closest.bottom) drawLine(cx, tr.bottom, cx, closest.bottom.getBoundingClientRect().top, Math.round(gaps.bottom) + 'px');
+        if (closest.left) drawLine(closest.left.getBoundingClientRect().right, cy, tr.left, cy, Math.round(gaps.left) + 'px');
+        if (closest.right) drawLine(tr.right, cy, closest.right.getBoundingClientRect().left, cy, Math.round(gaps.right) + 'px');
       } else {
-        // No siblings found — show distance to parent edges
         const pr = cur.getBoundingClientRect();
         const cx = (tr.left + tr.right) / 2;
         const cy = (tr.top + tr.bottom) / 2;
-        const gapTop = tr.top - pr.top;
-        const gapBottom = pr.bottom - tr.bottom;
-        const gapLeft = tr.left - pr.left;
-        const gapRight = pr.right - tr.right;
-        if (gapTop > 0) drawLine(cx, pr.top, cx, tr.top, Math.round(gapTop) + 'px');
-        if (gapBottom > 0) drawLine(cx, tr.bottom, cx, pr.bottom, Math.round(gapBottom) + 'px');
-        if (gapLeft > 0) drawLine(pr.left, cy, tr.left, cy, Math.round(gapLeft) + 'px');
-        if (gapRight > 0) drawLine(tr.right, cy, pr.right, cy, Math.round(gapRight) + 'px');
+        const gT = tr.top - pr.top, gB = pr.bottom - tr.bottom;
+        const gL = tr.left - pr.left, gR = pr.right - tr.right;
+        if (gT > 0) drawLine(cx, pr.top, cx, tr.top, Math.round(gT) + 'px');
+        if (gB > 0) drawLine(cx, tr.bottom, cx, pr.bottom, Math.round(gB) + 'px');
+        if (gL > 0) drawLine(pr.left, cy, tr.left, cy, Math.round(gL) + 'px');
+        if (gR > 0) drawLine(tr.right, cy, pr.right, cy, Math.round(gR) + 'px');
         measured = true;
       }
 
@@ -508,79 +525,53 @@ export function getClientScript(options: InspektOptions): string {
     }
 
     measureOverlay.style.display = 'block';
-
-    // Tooltip with distances summary
-    const lines = [];
-    lines.push('⬡ Measure mode  (M → pin element)');
     const tag = targetEl.tagName.toLowerCase();
     const rect = targetEl.getBoundingClientRect();
-    lines.push(\`<\${tag}> \${Math.round(rect.width)}×\${Math.round(rect.height)}\`);
-    return lines.join('\\n');
+    return \`⬡ Measure  (M → pin element)\\n<\${tag}> \${Math.round(rect.width)}×\${Math.round(rect.height)}\`;
   }
 
   function measureBetween(fromEl, toEl) {
     clearMeasureOverlay();
     const fr = fromEl.getBoundingClientRect();
     const tr = toEl.getBoundingClientRect();
+    const fTag = fromEl.tagName.toLowerCase(), tTag = toEl.tagName.toLowerCase();
+    const fComp = getComponentName(fromEl), tComp = getComponentName(toEl);
 
-    const lines = [];
-    lines.push('⬡ Measure  (Cmd+C → copy)');
-
-    const fTag = fromEl.tagName.toLowerCase();
-    const tTag = toEl.tagName.toLowerCase();
-    const fComp = getComponentName(fromEl);
-    const tComp = getComponentName(toEl);
+    const lines = ['⬡ Measure  (Cmd+C → copy)'];
     lines.push(\`From: <\${fTag}>\${fComp ? ' ' + fComp : ''} \${Math.round(fr.width)}×\${Math.round(fr.height)}\`);
     lines.push(\`To:   <\${tTag}>\${tComp ? ' ' + tComp : ''} \${Math.round(tr.width)}×\${Math.round(tr.height)}\`);
 
-    // Check containment
     const fromContainsTo = fr.left <= tr.left && fr.top <= tr.top && fr.right >= tr.right && fr.bottom >= tr.bottom;
     const toContainsFrom = tr.left <= fr.left && tr.top <= fr.top && tr.right >= fr.right && tr.bottom >= fr.bottom;
 
     if (fromContainsTo || toContainsFrom) {
       const outer = fromContainsTo ? fr : tr;
       const inner = fromContainsTo ? tr : fr;
-      const insetTop = inner.top - outer.top;
-      const insetBottom = outer.bottom - inner.bottom;
-      const insetLeft = inner.left - outer.left;
-      const insetRight = outer.right - inner.right;
-
-      const cx = (inner.left + inner.right) / 2;
-      const cy = (inner.top + inner.bottom) / 2;
-      if (insetTop > 0) drawLine(cx, outer.top, cx, inner.top, Math.round(insetTop) + 'px');
-      if (insetBottom > 0) drawLine(cx, inner.bottom, cx, outer.bottom, Math.round(insetBottom) + 'px');
-      if (insetLeft > 0) drawLine(outer.left, cy, inner.left, cy, Math.round(insetLeft) + 'px');
-      if (insetRight > 0) drawLine(inner.right, cy, outer.right, cy, Math.round(insetRight) + 'px');
-
-      lines.push(\`inset-top: \${Math.round(insetTop)}px\`);
-      lines.push(\`inset-bottom: \${Math.round(insetBottom)}px\`);
-      lines.push(\`inset-left: \${Math.round(insetLeft)}px\`);
-      lines.push(\`inset-right: \${Math.round(insetRight)}px\`);
+      const cx = (inner.left + inner.right) / 2, cy = (inner.top + inner.bottom) / 2;
+      const iT = inner.top - outer.top, iB = outer.bottom - inner.bottom;
+      const iL = inner.left - outer.left, iR = outer.right - inner.right;
+      if (iT > 0) drawLine(cx, outer.top, cx, inner.top, Math.round(iT) + 'px');
+      if (iB > 0) drawLine(cx, inner.bottom, cx, outer.bottom, Math.round(iB) + 'px');
+      if (iL > 0) drawLine(outer.left, cy, inner.left, cy, Math.round(iL) + 'px');
+      if (iR > 0) drawLine(inner.right, cy, outer.right, cy, Math.round(iR) + 'px');
+      lines.push(\`inset: \${Math.round(iT)}px \${Math.round(iR)}px \${Math.round(iB)}px \${Math.round(iL)}px\`);
     } else {
-      // Gap between separate elements
-      const vertGap = fr.bottom <= tr.top ? tr.top - fr.bottom
-                    : tr.bottom <= fr.top ? fr.top - tr.bottom : 0;
-      const horizGap = fr.right <= tr.left ? tr.left - fr.right
-                     : tr.right <= fr.left ? fr.left - tr.right : 0;
-
-      const cx = (fr.left + fr.right) / 2;
-      const cy = (fr.top + fr.bottom) / 2;
-
-      if (vertGap > 0) {
-        const yFrom = fr.bottom <= tr.top ? fr.bottom : tr.bottom;
-        const yTo = fr.bottom <= tr.top ? tr.top : fr.top;
-        drawLine(cx, yFrom, cx, yTo, Math.round(vertGap) + 'px');
-        lines.push(\`vertical gap: \${Math.round(vertGap)}px (\${fr.bottom <= tr.top ? 'From above To' : 'To above From'})\`);
+      const vGap = fr.bottom <= tr.top ? tr.top - fr.bottom : tr.bottom <= fr.top ? fr.top - tr.bottom : 0;
+      const hGap = fr.right <= tr.left ? tr.left - fr.right : tr.right <= fr.left ? fr.left - tr.right : 0;
+      const cx = (fr.left + fr.right) / 2, cy = (fr.top + fr.bottom) / 2;
+      if (vGap > 0) {
+        const y1 = fr.bottom <= tr.top ? fr.bottom : tr.bottom;
+        const y2 = fr.bottom <= tr.top ? tr.top : fr.top;
+        drawLine(cx, y1, cx, y2, Math.round(vGap) + 'px');
+        lines.push(\`vertical gap: \${Math.round(vGap)}px (\${fr.bottom <= tr.top ? 'From above To' : 'To above From'})\`);
       }
-      if (horizGap > 0) {
-        const xFrom = fr.right <= tr.left ? fr.right : tr.right;
-        const xTo = fr.right <= tr.left ? tr.left : fr.left;
-        drawLine(xFrom, cy, xTo, cy, Math.round(horizGap) + 'px');
-        lines.push(\`horizontal gap: \${Math.round(horizGap)}px\`);
+      if (hGap > 0) {
+        const x1 = fr.right <= tr.left ? fr.right : tr.right;
+        const x2 = fr.right <= tr.left ? tr.left : fr.left;
+        drawLine(x1, cy, x2, cy, Math.round(hGap) + 'px');
+        lines.push(\`horizontal gap: \${Math.round(hGap)}px\`);
       }
-      if (vertGap === 0 && horizGap === 0) {
-        lines.push('Elements overlap');
-      }
+      if (vGap === 0 && hGap === 0) lines.push('Elements overlap');
     }
 
     measureOverlay.style.display = 'block';
@@ -588,14 +579,11 @@ export function getClientScript(options: InspektOptions): string {
   }
 
   function buildMeasureCopyText(fromEl, toEl) {
-    const fr = fromEl.getBoundingClientRect();
-    const tr = toEl.getBoundingClientRect();
+    const fr = fromEl.getBoundingClientRect(), tr = toEl.getBoundingClientRect();
     const fromContainsTo = fr.left <= tr.left && fr.top <= tr.top && fr.right >= tr.right && fr.bottom >= tr.bottom;
     const toContainsFrom = tr.left <= fr.left && tr.top <= fr.top && tr.right >= fr.right && tr.bottom >= fr.bottom;
-    const fTag = fromEl.tagName.toLowerCase();
-    const tTag = toEl.tagName.toLowerCase();
-    const fComp = getComponentName(fromEl);
-    const tComp = getComponentName(toEl);
+    const fTag = fromEl.tagName.toLowerCase(), tTag = toEl.tagName.toLowerCase();
+    const fComp = getComponentName(fromEl), tComp = getComponentName(toEl);
     const fText = fromEl.textContent?.trim().slice(0, 40);
     const tText = toEl.textContent?.trim().slice(0, 40);
 
@@ -606,18 +594,14 @@ export function getClientScript(options: InspektOptions): string {
     lines.push(\`  selector: \${getSelector(toEl)}\`);
 
     if (fromContainsTo || toContainsFrom) {
-      const outer = fromContainsTo ? fr : tr;
-      const inner = fromContainsTo ? tr : fr;
-      lines.push(\`inset-top: \${Math.round(inner.top - outer.top)}px\`);
-      lines.push(\`inset-bottom: \${Math.round(outer.bottom - inner.bottom)}px\`);
-      lines.push(\`inset-left: \${Math.round(inner.left - outer.left)}px\`);
-      lines.push(\`inset-right: \${Math.round(outer.right - inner.right)}px\`);
+      const outer = fromContainsTo ? fr : tr, inner = fromContainsTo ? tr : fr;
+      lines.push(\`inset: \${Math.round(inner.top - outer.top)}px \${Math.round(outer.right - inner.right)}px \${Math.round(outer.bottom - inner.bottom)}px \${Math.round(inner.left - outer.left)}px\`);
     } else {
-      const vertGap = fr.bottom <= tr.top ? tr.top - fr.bottom : tr.bottom <= fr.top ? fr.top - tr.bottom : 0;
-      const horizGap = fr.right <= tr.left ? tr.left - fr.right : tr.right <= fr.left ? fr.left - tr.right : 0;
-      if (vertGap > 0) lines.push(\`vertical gap: \${Math.round(vertGap)}px (\${fr.bottom <= tr.top ? 'From above To' : 'To above From'})\`);
-      if (horizGap > 0) lines.push(\`horizontal gap: \${Math.round(horizGap)}px\`);
-      if (vertGap === 0 && horizGap === 0) lines.push('Elements overlap');
+      const vGap = fr.bottom <= tr.top ? tr.top - fr.bottom : tr.bottom <= fr.top ? fr.top - tr.bottom : 0;
+      const hGap = fr.right <= tr.left ? tr.left - fr.right : tr.right <= fr.left ? fr.left - tr.right : 0;
+      if (vGap > 0) lines.push(\`vertical gap: \${Math.round(vGap)}px (\${fr.bottom <= tr.top ? 'From above To' : 'To above From'})\`);
+      if (hGap > 0) lines.push(\`horizontal gap: \${Math.round(hGap)}px\`);
+      if (vGap === 0 && hGap === 0) lines.push('Elements overlap');
     }
     return lines.join('\\n');
   }
@@ -636,10 +620,10 @@ export function getClientScript(options: InspektOptions): string {
     if (needMeta !== e.metaKey) return false;
     if (!key) return false;
     const eKey = e.key.toLowerCase();
-    return eKey === key || eKey === '.' && key === 'period';
+    return eKey === key || (key === 'period' && eKey === '.');
   }
 
-  // ─── Mouse handlers ───────────────────────────────────────────────────────
+  // ─── Mouse ────────────────────────────────────────────────────────────────
   function onMouseMove(e) {
     if (!fiActive) return;
     const target = e.target;
@@ -649,32 +633,25 @@ export function getClientScript(options: InspektOptions): string {
     lastHovered = target;
 
     if (measureMode) {
-      if (pinEl && pinEl !== target) {
-        const text = measureBetween(pinEl, target);
-        tooltip.textContent = text;
-        positionTooltip(e.clientX, e.clientY);
-      } else {
-        const text = measureToNeighbor(target);
-        tooltip.textContent = text;
-        positionTooltip(e.clientX, e.clientY);
-      }
+      const text = (pinEl && pinEl !== target)
+        ? measureBetween(pinEl, target)
+        : measureToNeighbor(target);
+      tooltip.textContent = text;
+      positionTooltip(e.clientX, e.clientY);
     } else {
       clearMeasureOverlay();
-      const text = buildInfo(target);
-      tooltip.textContent = text;
+      tooltip.textContent = buildInfo(target);
       positionTooltip(e.clientX, e.clientY);
     }
   }
 
-  // ─── Keyboard handlers ────────────────────────────────────────────────────
+  // ─── Keyboard ─────────────────────────────────────────────────────────────
   function isInputFocused() {
     const el = document.activeElement;
-    if (!el) return false;
-    return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable;
+    return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
   }
 
   document.addEventListener('keydown', (e) => {
-    // Activate toggle — always listen
     if (matchesActivate(e)) {
       e.preventDefault();
       if (fiActive) deactivate(); else activate();
@@ -683,50 +660,59 @@ export function getClientScript(options: InspektOptions): string {
 
     if (!fiActive) return;
 
-    // Option tap to toggle measure mode
+    // Option tap (keydown only — actual toggle fires on keyup)
     if (e.key === 'Alt' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
       optionHeld = true;
       return;
     }
 
-    // Cmd+C to copy
+    // Cmd+C — copy
     if ((e.metaKey || e.ctrlKey) && e.key === 'c' && !e.shiftKey && !e.altKey) {
-      if (!lastHovered) return;
+      e.preventDefault();
       let text;
-      if (measureMode && pinEl && lastHovered !== pinEl) {
+      if (selectedEls.length > 0) {
+        text = buildMultiSelectCopyText();
+      } else if (measureMode && pinEl && lastHovered && lastHovered !== pinEl) {
         text = buildMeasureCopyText(pinEl, lastHovered);
-      } else {
+      } else if (lastHovered) {
         text = buildCopyText(lastHovered);
       }
-      navigator.clipboard.writeText(text).catch(() => {});
-      e.preventDefault();
+      if (text) navigator.clipboard.writeText(text).catch(() => {});
       return;
     }
 
     if (isInputFocused()) return;
 
-    // M key — pin element in measure mode
+    // P — pick/unpick element (multi-select), Properties mode only
+    if (e.key === 'p' || e.key === 'P') {
+      if (measureMode || !lastHovered) return;
+      toggleSelection(lastHovered);
+      return;
+    }
+
+    // M — pin element for measure-from, Measure mode only
     if (e.key === 'm' || e.key === 'M') {
       if (!measureMode || !lastHovered) return;
       if (pinEl) {
         clearPin();
+        collapsePill();
       } else {
         pinEl = lastHovered;
         pinHighlight = highlightEl(pinEl, '#9b59b6');
-        pillText.style.visibility = 'visible';
-        pillText.textContent = 'Pinned · hover another element · Cmd+C → copy · Esc → clear';
-        pill.style.maxWidth = '600px';
-        pillClose.style.visibility = 'visible';
+        expandPill('Pinned · hover another element · Cmd+C → copy · Esc → clear');
       }
       return;
     }
 
-    // Escape cascade
+    // Escape cascade: pin → selection → exit
     if (e.key === 'Escape') {
       if (pinEl) {
         clearPin();
         clearMeasureOverlay();
         hideTooltip();
+        updatePillForSelection();
+      } else if (selectedEls.length > 0) {
+        clearSelection();
         collapsePill();
       } else {
         deactivate();
@@ -741,15 +727,14 @@ export function getClientScript(options: InspektOptions): string {
       optionHeld = false;
       measureMode = !measureMode;
       clearMeasureOverlay();
-      if (!pinEl) clearPin();
+      if (!measureMode) clearPin();
       hideTooltip();
       flashMode();
     }
   }, true);
 
-  // Attach mouse listener
   document.addEventListener('mousemove', onMouseMove, { passive: true });
 
-  console.log('%c⚡ Inspekt active — Ctrl+Option+. to toggle', 'color:#aaa;font-size:11px;');
+  console.log('%c👻 Specter — Ctrl+Option+Z to toggle', 'color:#aaa;font-size:11px;');
 })();`;
 }

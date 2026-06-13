@@ -1,15 +1,17 @@
 import type { Plugin } from 'vite';
 import { getClientScript } from './client.js';
 
-export interface InspektOptions {
+export { getClientScript };
+
+export interface SpecterOptions {
   shortcuts?: {
     activate?: string;
   };
 }
 
-export function inspekt(options: InspektOptions = {}): Plugin {
+export function specter(options: SpecterOptions = {}): Plugin {
   return {
-    name: 'vite-plugin-inspekt',
+    name: 'vite-plugin-specter',
     apply: 'serve',
     transformIndexHtml(html) {
       const script = getClientScript(options);
