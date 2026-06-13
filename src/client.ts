@@ -620,7 +620,8 @@ export function getClientScript(options: SpecterOptions): string {
     if (needMeta !== e.metaKey) return false;
     if (!key) return false;
     const eKey = e.key.toLowerCase();
-    return eKey === key || (key === 'period' && eKey === '.');
+    const eCode = e.code.toLowerCase();
+    return eKey === key || eCode === \`key\${key}\` || (key === 'period' && (eKey === '.' || eCode === 'period'));
   }
 
   // ─── Mouse ────────────────────────────────────────────────────────────────
