@@ -14,7 +14,7 @@ export function specter(options: SpecterOptions = {}): Plugin {
     name: 'vite-plugin-specter',
     apply: 'serve',
     transformIndexHtml(html) {
-      const script = getClientScript(options);
+      const script = getClientScript(options).replace(/<\/script>/gi, '<\\/script>');
       return html.replace('</body>', () => `<script>\n${script}\n</script>\n</body>`);
     },
   };

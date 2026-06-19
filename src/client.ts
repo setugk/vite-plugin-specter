@@ -273,7 +273,7 @@ export function getClientScript(options: SpecterOptions): string {
   function parseColor(str) {
     if (!str || str === 'transparent' || str === 'rgba(0, 0, 0, 0)') return null;
     var m = str.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)/);
-    if (!m) return { hex: str, alpha: 1 };
+    if (!m) return null;
     return { hex: toHex(m[1], m[2], m[3]), alpha: m[4] !== undefined ? parseFloat(m[4]) : 1 };
   }
 
