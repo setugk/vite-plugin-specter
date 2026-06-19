@@ -1,7 +1,7 @@
 {
   "name": "vite-plugin-specter",
-  "version": "0.2.2",
-  "description": "Dev-only element inspector overlay for Vite projects. Hover any element to see its styles, component name, and spacing — then copy to clipboard for AI assistants.",
+  "version": "0.2.3",
+  "description": "Inspect elements and Figma-style measure spacing in your vibe-coded Vite projects. Give your AI exactly what it needs to make the right change.",
   "author": "Setu Kathawate <dev@setugk.com>",
   "homepage": "https://github.com/setugk/vite-plugin-specter#readme",
   "repository": {
