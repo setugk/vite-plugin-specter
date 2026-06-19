@@ -1,7 +1,16 @@
 {
   "name": "vite-plugin-specter",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Dev-only element inspector overlay for Vite projects. Hover any element to see its styles, component name, and spacing — then copy to clipboard for AI assistants.",
+  "author": "Setu Kathawate <dev@setugk.com>",
+  "homepage": "https://github.com/setugk/vite-plugin-specter#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/setugk/vite-plugin-specter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/setugk/vite-plugin-specter/issues"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -33,11 +42,16 @@
   },
   "keywords": [
     "vite",
+    "vite-plugin",
     "plugin",
     "inspector",
+    "element-inspector",
     "devtools",
+    "overlay",
     "design",
-    "css"
+    "css",
+    "ai",
+    "dx"
   ],
   "license": "MIT"
 }
