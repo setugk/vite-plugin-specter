@@ -980,6 +980,14 @@ export function getClientScript(options: SpecterOptions): string {
 
   document.addEventListener('mousemove', onMouseMove, { passive: true });
 
+  window.__specterToggle = function() { if (fiActive) deactivate(); else activate(); };
+
+  if (typeof browser !== 'undefined' && browser.runtime && browser.runtime.onMessage) {
+    browser.runtime.onMessage.addListener(function(msg) {
+      if (msg && msg.type === 'specter-toggle') window.__specterToggle();
+    });
+  }
+
   console.log('%c👻 Specter — Ctrl+Option+Z to toggle', 'color:#aaa;font-size:11px;');
 })();`;
 }

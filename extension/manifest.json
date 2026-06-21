@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Specter",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Element inspector for AI-assisted development. Ctrl+Option+Z to activate.",
   "icons": {
     "16": "icons/icon16.png",

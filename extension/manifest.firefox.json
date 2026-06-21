@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Specter",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Element inspector for AI-assisted development. Ctrl+Option+Z to activate.",
   "browser_specific_settings": {
     "gecko": {
@@ -21,7 +21,7 @@
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     },
-    "default_title": "Activate Specter on this page"
+    "default_title": "Toggle Specter"
   },
   "background": {
     "scripts": ["background.firefox.js"],
@@ -29,14 +29,10 @@
   },
   "content_scripts": [
     {
-      "matches": [
-        "http://localhost/*",
-        "http://127.0.0.1/*",
-        "http://0.0.0.0/*"
-      ],
+      "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_end"
     }
   ],
-  "permissions": ["activeTab", "tabs"]
+  "permissions": ["activeTab"]
 }
