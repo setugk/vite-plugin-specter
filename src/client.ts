@@ -949,7 +949,14 @@ export function getClientScript(options: SpecterOptions): string {
     }
 
     if (e.key === 'Escape') {
-      deactivate();
+      if (pinEl) {
+        clearPin();
+        clearMeasureOverlay();
+        hideTooltip();
+        updatePillForSelection();
+      } else {
+        deactivate();
+      }
       return;
     }
   }, true);
