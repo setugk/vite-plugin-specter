@@ -930,7 +930,7 @@ export function getClientScript(options: SpecterOptions): string {
     if (isInputFocused()) return;
 
     if (e.key === 'p' || e.key === 'P') {
-      if (measureMode || !lastHovered) return;
+      if (!lastHovered) return;
       clearHoverOutline();
       toggleSelection(lastHovered);
       return;
@@ -949,11 +949,12 @@ export function getClientScript(options: SpecterOptions): string {
     }
 
     if (e.key === 'Escape') {
-      if (pinEl) {
+      if (pinEl || selectedEls.length > 0) {
         clearPin();
+        clearSelection();
         clearMeasureOverlay();
         hideTooltip();
-        updatePillForSelection();
+        collapsePill();
       } else {
         deactivate();
       }
