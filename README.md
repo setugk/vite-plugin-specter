@@ -60,6 +60,23 @@ In Measure mode, press **M** while hovering to pin that element. Then hover any 
 
 Press **P** while hovering an element to pick it. Numbered badges appear on each picked element. Press **Cmd+C** to copy all selected elements at once. Press **Esc** to clear the selection.
 
+### Annotate a change (skip the re-explaining)
+
+Press **N** while hovering an element to attach a change note to it. A small field opens on the element — type what you want ("reduce width to 320", "tighten padding to 8px"), press **Enter** to save. The element is added to the selection and its badge shows a chip with your note. Annotate as many issues across the page as you like, then press **Cmd+C** once.
+
+Each element's copied block now leads with your instruction:
+
+```
+[Specter 1/3]
+✏️ CHANGE: reduce width to 320, tighten vertical padding
+<button>.btn-primary Button 200×48
+font: Inter 600 14/20
+padding: 12px 20px
+...
+```
+
+So when you paste into your AI assistant, it already knows both *what* to change and *which element* — no follow-up typing. Notes are ephemeral (cleared on **Esc** or when you toggle Specter off).
+
 ## Shortcut reference
 
 | Action | Shortcut |
@@ -70,6 +87,7 @@ Press **P** while hovering an element to pick it. Numbered badges appear on each
 | Switch to Measure mode | **Option** (tap) |
 | Pin element for measuring | **M** (in Measure mode) |
 | Pick element (multi-select) | **P** (in Properties mode) |
+| Annotate a change | **N** (in Properties mode) |
 | Clear pin / clear selection | **Esc** |
 | Exit Specter | **Esc** (when nothing selected/pinned) |
 
@@ -77,11 +95,11 @@ Press **P** while hovering an element to pick it. Numbered badges appear on each
 
 1. Toggle Specter (Ctrl+Option+Z)
 2. Hover the element you want to change
-3. Press **Cmd+C** to copy
-4. Paste into your AI assistant's chat
-5. Say what you want: "make this blue", "increase spacing", "fix the font weight"
+3. Either press **Cmd+C** to copy its properties, or press **N** to annotate the exact change you want first
+4. Repeat **N** on every element you want to change, then **Cmd+C** once to copy them all
+5. Paste into your AI assistant's chat — the instructions travel with the elements, so there's nothing left to explain
 
-No more "which element?", no more "what's the current value?". One paste gives your assistant everything it needs.
+No more "which element?", no more "what's the current value?", and now no more re-typing the change. One paste gives your assistant everything it needs.
 
 ## Configuration
 

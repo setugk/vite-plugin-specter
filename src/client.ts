@@ -14,6 +14,7 @@ export function getClientScript(options: SpecterOptions): string {
   var LABEL = '#8B8D94';
   var MONO = "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace";
   var ZAP = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>';
+  var PENCIL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path><path d="m15 5 4 4"></path></svg>';
   var ACTIVATE = ${JSON.stringify(activateShortcut)};
 
   // ─── State ────────────────────────────────────────────────────────────────
@@ -33,6 +34,9 @@ export function getClientScript(options: SpecterOptions): string {
   var lastMouse = { x: 0, y: 0 };
   var selectedEls = [];
   var selectedBadges = [];
+  var noteMap = new Map();
+  var noteInputEl = null;
+  var noteTargetEl = null;
 
   // ─── Tooltip ──────────────────────────────────────────────────────────────
   var tooltip = document.createElement('div');
@@ -192,11 +196,11 @@ export function getClientScript(options: SpecterOptions): string {
     pillExpanded = true;
     if (text) { pillText.textContent = text; return; }
     if (selectedEls.length > 0) {
-      pillText.textContent = selectedEls.length + ' selected · Cmd+C copy all · Esc clear';
+      pillText.textContent = selectedEls.length + ' selected · N annotate · Cmd+C copy all · Esc clear';
     } else if (measureMode) {
       pillText.textContent = 'Measure · hover distances · M pin · Cmd+C copy · Option toggle';
     } else {
-      pillText.textContent = 'Properties · hover inspect · P pick · Cmd+C copy · Option measure';
+      pillText.textContent = 'Properties · hover · P pick · N annotate · Cmd+C copy · Option measure';
     }
   }
 
@@ -277,17 +281,11 @@ export function getClientScript(options: SpecterOptions): string {
     return { hex: toHex(m[1], m[2], m[3]), alpha: m[4] !== undefined ? parseFloat(m[4]) : 1 };
   }
 
-  function colorLabel(str) {
-    var c = parseColor(str);
-    if (!c) return null;
-    if (c.alpha < 1) return c.hex + ' (' + Math.round(c.alpha * 100) + '% opacity)';
-    return c.hex;
-  }
-
   function colorObj(str) {
     var c = parseColor(str);
     if (!c) return null;
-    return { raw: str, hex: c.hex, alpha: c.alpha, label: colorLabel(str) };
+    var label = c.alpha < 1 ? c.hex + ' (' + Math.round(c.alpha * 100) + '% opacity)' : c.hex;
+    return { raw: str, hex: c.hex, alpha: c.alpha, label: label };
   }
 
   function edge(t, r, b, l) {
@@ -322,6 +320,55 @@ export function getClientScript(options: SpecterOptions): string {
     return null;
   }
 
+  // Collapse a rule's declarations to their shortest lossless form: drop
+  // 'initial' (= default, no signal) and always-'normal' noise, and fold
+  // side/corner longhands back into shorthands (margin/padding/radius/gap/transition).
+  function cleanDecls(style) {
+    var m = {}, order = [];
+    for (var i = 0; i < style.length; i++) {
+      var p = style[i];
+      var v = style.getPropertyValue(p);
+      if (!v) continue;
+      if (v === 'initial') continue;
+      if (p === 'transition-behavior') continue;
+      if (!(p in m)) order.push(p);
+      m[p] = v;
+    }
+    var used = {}, collapses = {};
+    function four(name, t, r, b, l) {
+      if (m[t] === undefined || m[r] === undefined || m[b] === undefined || m[l] === undefined) return;
+      used[t] = used[r] = used[b] = used[l] = 1;
+      var a = m[t], c = m[r], d = m[b], e = m[l], sh;
+      if (a === c && c === d && d === e) sh = a;
+      else if (a === d && c === e) sh = a + ' ' + c;
+      else if (c === e) sh = a + ' ' + c + ' ' + d;
+      else sh = a + ' ' + c + ' ' + d + ' ' + e;
+      collapses[t] = name + ': ' + sh;
+    }
+    four('margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left');
+    four('padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left');
+    four('border-radius', 'border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius');
+    if (m['row-gap'] !== undefined && m['column-gap'] !== undefined) {
+      var g = m['row-gap'] === m['column-gap'] ? m['row-gap'] : m['row-gap'] + ' ' + m['column-gap'];
+      collapses['row-gap'] = 'gap: ' + g; used['row-gap'] = used['column-gap'] = 1;
+    }
+    if (m['transition-property'] !== undefined) {
+      var tr = 'transition: ' + m['transition-property'];
+      if (m['transition-duration'] !== undefined) tr += ' ' + m['transition-duration'];
+      if (m['transition-timing-function'] !== undefined) tr += ' ' + m['transition-timing-function'];
+      if (m['transition-delay'] !== undefined && m['transition-delay'] !== '0s') tr += ' ' + m['transition-delay'];
+      collapses['transition-property'] = tr;
+      used['transition-property'] = used['transition-duration'] = used['transition-timing-function'] = used['transition-delay'] = 1;
+    }
+    var out = [];
+    order.forEach(function (p) {
+      if (collapses[p]) { out.push('  ' + collapses[p] + ';'); return; }
+      if (used[p]) return;
+      out.push('  ' + p + ': ' + m[p] + ';');
+    });
+    return out;
+  }
+
   function getMatchingRules(el) {
     var results = [];
     try {
@@ -338,12 +385,7 @@ export function getClientScript(options: SpecterOptions): string {
           if (/^[*,]|^:root|^html|^body$|^::before|^::after/.test(sel.trim())) continue;
           try {
             if (el.matches(sel)) {
-              var props = [];
-              for (var i = 0; i < rule.style.length; i++) {
-                var prop = rule.style[i];
-                var val = rule.style.getPropertyValue(prop);
-                if (val) props.push('  ' + prop + ': ' + val + ';');
-              }
+              var props = cleanDecls(rule.style);
               if (props.length) results.push(sel + ' {\\n' + props.join('\\n') + '\\n}');
             }
           } catch (e) {}
@@ -463,9 +505,13 @@ export function getClientScript(options: SpecterOptions): string {
   }
 
   function buildMultiSelectCopyText() {
+    var n = selectedEls.length;
     return selectedEls.map(function (el, i) {
       var body = buildLLMClipboard(buildInfo(el));
-      return body.replace('[Specter]', '[Specter ' + (i + 1) + '/' + selectedEls.length + ']');
+      var note = noteMap.get(el);
+      var header = n > 1 ? '[Specter ' + (i + 1) + '/' + n + ']' : '[Specter]';
+      if (note) header += '\\n✏️ CHANGE: ' + note;
+      return body.replace('[Specter]', header);
     }).join('\\n\\n' + Array(41).join('─') + '\\n\\n');
   }
 
@@ -489,6 +535,7 @@ export function getClientScript(options: SpecterOptions): string {
   function clearHoverOutline() {
     if (outlinedEl) {
       outlinedEl.style.outline = prevOutline;
+      outlinedEl.style.outlineOffset = '';
       outlinedEl = null;
     }
   }
@@ -515,16 +562,25 @@ export function getClientScript(options: SpecterOptions): string {
   }
 
   // ─── Multi-select ─────────────────────────────────────────────────────────
-  function makeBadge(el, index) {
+  function makeBadge(el, index, note) {
     var rect = el.getBoundingClientRect();
-    var badge = document.createElement('div');
-    badge.textContent = String(index + 1);
-    Object.assign(badge.style, {
+    var wrap = document.createElement('div');
+    Object.assign(wrap.style, {
       position: 'fixed',
       left: (rect.left - 4) + 'px',
       top: (rect.top - 4) + 'px',
+      zIndex: '2147483644',
+      pointerEvents: 'none',
+      display: 'flex',
+      alignItems: 'flex-start',
+      gap: '4px',
+    });
+    var badge = document.createElement('div');
+    badge.textContent = String(index + 1);
+    Object.assign(badge.style, {
       width: '20px',
       height: '20px',
+      flexShrink: '0',
       background: PURPLE,
       color: '#fff',
       fontSize: '11px',
@@ -534,19 +590,38 @@ export function getClientScript(options: SpecterOptions): string {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      zIndex: '2147483644',
-      pointerEvents: 'none',
       boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
     });
-    document.body.appendChild(badge);
-    return badge;
+    wrap.appendChild(badge);
+    if (note) {
+      var chip = document.createElement('div');
+      chip.textContent = '✏️ ' + (note.length > 32 ? note.slice(0, 32) + '…' : note);
+      Object.assign(chip.style, {
+        maxWidth: '240px',
+        background: TIP_BG,
+        color: '#fff',
+        fontSize: '10px',
+        lineHeight: '16px',
+        fontFamily: MONO,
+        padding: '2px 6px',
+        borderRadius: '4px',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        border: '1px solid ' + PURPLE,
+        boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
+      });
+      wrap.appendChild(chip);
+    }
+    document.body.appendChild(wrap);
+    return wrap;
   }
 
   function rebuildBadges() {
     selectedBadges.forEach(function (b) { b.remove(); });
     selectedBadges.length = 0;
     selectedEls.forEach(function (el, i) {
-      selectedBadges.push(makeBadge(el, i));
+      selectedBadges.push(makeBadge(el, i, noteMap.get(el)));
     });
   }
 
@@ -555,6 +630,7 @@ export function getClientScript(options: SpecterOptions): string {
     if (idx >= 0) {
       selectedEls.splice(idx, 1);
       el.style.outline = '';
+      noteMap.delete(el);
     } else {
       selectedEls.push(el);
       el.style.outline = '2px solid ' + PURPLE;
@@ -565,15 +641,153 @@ export function getClientScript(options: SpecterOptions): string {
   }
 
   function clearSelection() {
-    selectedEls.forEach(function (el) { el.style.outline = ''; });
+    closeNoteInput();
+    selectedEls.forEach(function (el) { el.style.outline = ''; el.style.outlineOffset = ''; });
     selectedEls.length = 0;
     selectedBadges.forEach(function (b) { b.remove(); });
     selectedBadges.length = 0;
+    noteMap.clear();
   }
 
   function updatePillForSelection() {
     if (selectedEls.length > 0) expandPill();
     else if (!pillWrap.matches(':hover')) collapsePill();
+  }
+
+  // ─── Annotations (inline change notes) ──────────────────────────────────────
+  function openNoteInput(el) {
+    closeNoteInput();
+    if (selectedEls.indexOf(el) < 0) {
+      clearHoverOutline();
+      hideTooltip();
+      selectedEls.push(el);
+      el.style.outline = '2px solid ' + PURPLE;
+      el.style.outlineOffset = '-1px';
+    }
+    noteTargetEl = el;
+    var rect = el.getBoundingClientRect();
+
+    var box = document.createElement('div');
+    Object.assign(box.style, {
+      position: 'fixed',
+      zIndex: '2147483647',
+      display: 'inline-flex',
+      alignItems: 'flex-start',
+      gap: '8px',
+      boxSizing: 'border-box',
+      background: TIP_BG,
+      border: '1px solid ' + PURPLE,
+      borderRadius: '8px',
+      padding: '11px 12px',
+      boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
+      fontFamily: MONO,
+    });
+    var pen = document.createElement('span');
+    pen.innerHTML = PENCIL;
+    Object.assign(pen.style, {
+      display: 'flex',
+      alignItems: 'center',
+      flexShrink: '0',
+      marginTop: '2px',
+      color: '#E0A3F5',
+    });
+    var input = document.createElement('textarea');
+    input.rows = 1;
+    input.placeholder = 'Describe the change… (Enter to save)';
+    input.value = noteMap.get(el) || '';
+    Object.assign(input.style, {
+      flexShrink: '0',
+      background: 'transparent',
+      border: 'none',
+      outline: 'none',
+      resize: 'none',
+      overflow: 'hidden',
+      color: '#fff',
+      fontFamily: MONO,
+      fontSize: '12px',
+      lineHeight: '18px',
+      padding: '0',
+      margin: '0',
+      whiteSpace: 'pre-wrap',
+      overflowWrap: 'anywhere',
+    });
+    // Hidden mirror to measure single-line text width so the field grows as you type.
+    var meas = document.createElement('span');
+    Object.assign(meas.style, {
+      position: 'absolute',
+      visibility: 'hidden',
+      whiteSpace: 'pre',
+      pointerEvents: 'none',
+      fontFamily: MONO,
+      fontSize: '12px',
+      left: '-9999px',
+      top: '0',
+    });
+    box.appendChild(pen);
+    box.appendChild(input);
+    box.appendChild(meas);
+    document.body.appendChild(box);
+    noteInputEl = box;
+
+    var margin = 8;
+    function textW(t) { meas.textContent = t; return meas.offsetWidth; }
+
+    // Anchor to the element; the box is repositioned around this as it grows.
+    var anchorL = rect.left, anchorT = rect.top, anchorB = rect.bottom;
+
+    function sizeAndPosition() {
+      var vw = window.innerWidth, vh = window.innerHeight;
+      var maxBoxW = Math.min(560, vw - margin * 2);
+      var maxTextW = Math.max(120, maxBoxW - 55);        // room for icon + gaps + padding
+      var placeholderW = textW(input.placeholder);
+      var minTextW = Math.min(placeholderW, maxTextW);
+      var maxTaH = Math.min(14 * 18, Math.max(18, (vh - margin * 2) - 24)); // cap ~14 lines, never past viewport
+
+      // Width: grow with content up to the max, then wrapping takes over.
+      var single = textW(input.value || input.placeholder) + 3;
+      input.style.width = Math.min(Math.max(single, minTextW), maxTextW) + 'px';
+      // Height: fit wrapped content, scroll only in the extreme case.
+      input.style.height = 'auto';
+      var h = input.scrollHeight;
+      if (h > maxTaH) { input.style.height = maxTaH + 'px'; input.style.overflowY = 'auto'; }
+      else { input.style.height = h + 'px'; input.style.overflowY = 'hidden'; }
+
+      // Keep the whole box on screen.
+      var bw = box.offsetWidth, bh = box.offsetHeight;
+      var left = Math.min(Math.max(anchorL, margin), Math.max(margin, vw - bw - margin));
+      var top = anchorT - bh - 8;                        // prefer sitting above the element
+      if (top < margin) top = anchorB + 8;               // otherwise below it
+      if (top + bh > vh - margin) top = Math.max(margin, vh - bh - margin);
+      box.style.left = left + 'px';
+      box.style.top = top + 'px';
+    }
+    sizeAndPosition();
+
+    input.addEventListener('input', sizeAndPosition);
+    input.addEventListener('keydown', function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); commitNote(input.value); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeNoteInput(); }
+    });
+
+    rebuildBadges();
+    updatePillForSelection();
+    setTimeout(function () { input.focus(); }, 0);
+  }
+
+  function commitNote(val) {
+    val = (val || '').trim();
+    if (noteTargetEl) {
+      if (val) noteMap.set(noteTargetEl, val);
+      else noteMap.delete(noteTargetEl);
+    }
+    closeNoteInput();
+    rebuildBadges();
+  }
+
+  function closeNoteInput() {
+    if (noteInputEl) { noteInputEl.remove(); noteInputEl = null; }
+    noteTargetEl = null;
   }
 
   // ─── Pin (measure) ──────────────────────────────────────────────────────────
@@ -872,6 +1086,7 @@ export function getClientScript(options: SpecterOptions): string {
     var target = e.target;
     if (!target || target === pillWrap || pillWrap.contains(target)) return;
     if (target === tooltip || tooltip.contains(target)) return;
+    if (noteInputEl && (target === noteInputEl || noteInputEl.contains(target))) return;
 
     lastHovered = target;
 
@@ -906,6 +1121,9 @@ export function getClientScript(options: SpecterOptions): string {
 
     if (!fiActive) return;
 
+    // Note editor open: let the field handle its own keys (Enter/Esc) and native copy/paste.
+    if (noteInputEl) return;
+
     if (e.key === 'Alt' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
       optionHeld = true;
       return;
@@ -933,6 +1151,12 @@ export function getClientScript(options: SpecterOptions): string {
       if (!lastHovered) return;
       clearHoverOutline();
       toggleSelection(lastHovered);
+      return;
+    }
+
+    if (e.key === 'n' || e.key === 'N') {
+      if (!lastHovered) return;
+      openNoteInput(lastHovered);
       return;
     }
 
@@ -980,8 +1204,9 @@ export function getClientScript(options: SpecterOptions): string {
 
   window.__specterToggle = function() { if (fiActive) deactivate(); else activate(); };
 
-  if (typeof browser !== 'undefined' && browser.runtime && browser.runtime.onMessage) {
-    browser.runtime.onMessage.addListener(function(msg) {
+  var _rt = (typeof browser !== 'undefined' && browser.runtime) || (typeof chrome !== 'undefined' && chrome.runtime);
+  if (_rt && _rt.onMessage) {
+    _rt.onMessage.addListener(function(msg) {
       if (msg && msg.type === 'specter-toggle') window.__specterToggle();
     });
   }
