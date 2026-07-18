@@ -3,3 +3,5 @@ dist/
 extension/content.js
 context.md
 docs*/
+store-packages/
+.DS_Store

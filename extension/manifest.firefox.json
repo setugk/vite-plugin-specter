@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Specter",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Element inspector for AI-assisted development. Ctrl+Option+Z to activate.",
   "browser_specific_settings": {
     "gecko": {

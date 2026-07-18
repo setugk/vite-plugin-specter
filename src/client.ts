@@ -4,7 +4,13 @@ export function getClientScript(options: SpecterOptions): string {
   const activateShortcut = options.shortcuts?.activate ?? 'ctrl+alt+z';
   return `(function() {
   'use strict';
-  if (window.__specter) return; window.__specter = true;
+  // Guard against running twice on one page. Use a DOM marker (not just a
+  // window global) so the browser-extension build (isolated world) and the
+  // Vite-plugin build (page main world) can see each other and only one runs —
+  // they share the DOM but not window globals, so a per-world flag misses.
+  if (window.__specter || document.documentElement.hasAttribute('data-specter')) return;
+  window.__specter = true;
+  document.documentElement.setAttribute('data-specter', '');
 
   // ─── Constants ──────────────────────────────────────────────────────────────
   var PURPLE = '#AD24D3';
