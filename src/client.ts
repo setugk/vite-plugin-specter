@@ -22,6 +22,8 @@ export function getClientScript(options: SpecterOptions): string {
   var ZAP = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>';
   var PENCIL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path><path d="m15 5 4 4"></path></svg>';
   var TRASH = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>';
+  var LIST = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>';
+  var CHEV = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
   var ACTIVATE = ${JSON.stringify(activateShortcut)};
 
   // ─── State ────────────────────────────────────────────────────────────────
@@ -46,11 +48,26 @@ export function getClientScript(options: SpecterOptions): string {
   var editorSpec = null;    // the Spec being edited
   var editorCommit = null;  // idempotent commit fn for the open editor
   var rafId = null;         // reflow loop handle
+  var panelOpen = false;    // Specs side panel visible?
+  var panelEditSpec = null; // Spec being inline-edited in the panel, or null
+  var highlightSpec = null; // Spec whose badge is enlarged (panel-row hover)
+  var groupHover = {};       // per-cluster fan-out hover state (keyed by member ids)
+  // Per-URL reload insurance: Specs survive an accidental refresh. Zero network —
+  // localStorage only, keyed by path so different routes keep separate lists.
+  var STORAGE_KEY = '__specter_specs_' + location.pathname;
 
   // Tag every Specter-owned node so inspect/hover logic can skip its own UI
   // (no "Specter-ception" — never inspect our own overlays).
   function markUI(el) { el.setAttribute('data-specter-ui', ''); return el; }
   function isUI(el) { return !!(el && el.closest && el.closest('[data-specter-ui]')); }
+
+  // Attach a hover effect to an interactive icon/button: apply the "on" styles
+  // while hovered, restore the "off" styles on leave (keeps things clickable-feeling).
+  function hoverFx(el, on, off) {
+    el.style.transition = (el.style.transition ? el.style.transition + ', ' : '') + 'background 0.12s ease, color 0.12s ease, opacity 0.12s ease, transform 0.12s ease';
+    el.addEventListener('mouseenter', function () { Object.assign(el.style, on); });
+    el.addEventListener('mouseleave', function () { Object.assign(el.style, off); });
+  }
 
   // ─── Tooltip ──────────────────────────────────────────────────────────────
   var tooltip = document.createElement('div');
@@ -150,12 +167,30 @@ export function getClientScript(options: SpecterOptions): string {
     cursor: 'pointer',
   });
   closeEl.addEventListener('click', function (e) { e.stopPropagation(); deactivate(); });
+  hoverFx(closeEl, { transform: 'scale(1.25)' }, { transform: 'scale(1)' });
 
   iconBtn.appendChild(zapEl);
   iconBtn.appendChild(closeEl);
 
   var pillText = document.createElement('span');
   Object.assign(pillText.style, { display: 'none', color: '#f3d9fb' });
+
+  var listBtn = document.createElement('span');
+  listBtn.innerHTML = LIST;
+  listBtn.title = 'Show Specs panel (L)';
+  Object.assign(listBtn.style, {
+    display: 'none',
+    alignItems: 'center',
+    cursor: 'pointer',
+    color: '#fff',
+    flexShrink: '0',
+    padding: '4px 6px',
+    marginLeft: '2px',
+    borderRadius: '999px',
+    background: 'rgba(255,255,255,0.16)',
+  });
+  listBtn.addEventListener('click', function (e) { e.stopPropagation(); togglePanel(); });
+  hoverFx(listBtn, { background: 'rgba(255,255,255,0.32)' }, { background: 'rgba(255,255,255,0.16)' });
 
   var clearBtn = document.createElement('span');
   clearBtn.textContent = '✕ Clear';
@@ -173,6 +208,7 @@ export function getClientScript(options: SpecterOptions): string {
     background: 'rgba(255,255,255,0.16)',
   });
   clearBtn.addEventListener('click', function (e) { e.stopPropagation(); removeAllSpecs(); });
+  hoverFx(clearBtn, { background: 'rgba(255,255,255,0.32)' }, { background: 'rgba(255,255,255,0.16)' });
 
   var chevron = document.createElement('span');
   chevron.textContent = '›';
@@ -187,9 +223,11 @@ export function getClientScript(options: SpecterOptions): string {
     opacity: '0.8',
   });
   chevron.addEventListener('click', function (e) { e.stopPropagation(); moveSide(); });
+  hoverFx(chevron, { opacity: '1', transform: 'scale(1.2)' }, { opacity: '0.8', transform: 'scale(1)' });
 
   pill.appendChild(iconBtn);
   pill.appendChild(pillText);
+  pill.appendChild(listBtn);
   pill.appendChild(clearBtn);
   pill.appendChild(chevron);
   pillWrap.appendChild(pill);
@@ -228,11 +266,12 @@ export function getClientScript(options: SpecterOptions): string {
     pill.style.maxWidth = '820px';
     pillText.style.display = 'inline';
     chevron.style.display = 'inline';
+    listBtn.style.display = specs.length > 0 ? 'inline-flex' : 'none';
     clearBtn.style.display = specs.length > 0 ? 'inline' : 'none';
     pillExpanded = true;
     if (text) { pillText.textContent = text; return; }
     if (specs.length > 0) {
-      pillText.textContent = specs.length + (specs.length === 1 ? ' Spec' : ' Specs') + ' · P add · click a Spec to edit · Cmd+C copy';
+      pillText.textContent = specs.length + (specs.length === 1 ? ' Spec' : ' Specs') + ' · P add · L panel · Cmd+C copy';
     } else if (measureMode) {
       pillText.textContent = 'Measure · hover distances · P mark · M pin · Cmd+C copy · Option toggle';
     } else {
@@ -244,6 +283,7 @@ export function getClientScript(options: SpecterOptions): string {
     pill.style.maxWidth = '32px';
     pillText.style.display = 'none';
     chevron.style.display = 'none';
+    listBtn.style.display = 'none';
     clearBtn.style.display = 'none';
     pillExpanded = false;
   }
@@ -263,6 +303,7 @@ export function getClientScript(options: SpecterOptions): string {
   function updatePill() {
     if (specs.length > 0) expandPill();
     else if (!pillWrap.matches(':hover')) collapsePill();
+    if (panelOpen) renderPanel();
   }
 
   // ─── Activate / Deactivate ────────────────────────────────────────────────
@@ -290,6 +331,7 @@ export function getClientScript(options: SpecterOptions): string {
     document.body.style.cursor = '';
     hideTooltip();
     clearMeasureOverlay();
+    hidePanel();
     stopLoop();
     reflowSpecs(); // hides all Spec badges while inactive (data kept)
   }
@@ -574,10 +616,42 @@ export function getClientScript(options: SpecterOptions): string {
     return !(top === el || el.contains(top) || top.contains(el));
   }
 
+  // Place one badge: wrap at the element's anchor (left/top follows scroll, no
+  // transition), offset applied via transform (transitions smoothly). The expand
+  // flag grows the circle into its note capsule. A panel-highlighted badge pops to
+  // the anchor, enlarges, and rises on top.
+  function layoutBadge(s, bx, by, dx, dy, z, expand) {
+    var hi = (s === highlightSpec);
+    s.wrap.style.display = 'block';
+    s.wrap.style.left = bx + 'px';
+    s.wrap.style.top = by + 'px';
+    s.wrap.style.transform = hi ? 'translate(0px,0px)' : ('translate(' + dx + 'px,' + dy + 'px)');
+    s.wrap.style.zIndex = hi ? '2147483645' : String(z);
+    s.cap.style.transform = hi ? 'scale(1.6)' : '';
+    s.cap.style.maxWidth = expand ? '320px' : '20px';
+  }
+
+  // The badge whose wrap sits under the cursor right now (topmost). Drives which
+  // single badge is expanded — never more than one.
+  function badgeUnderCursor(mx, my) {
+    var at = document.elementFromPoint(mx, my);
+    if (!at) return null;
+    var w = at.closest('[data-specter-ui]');
+    return (w && w.__spec) ? w.__spec : null;
+  }
+
   // Position every Spec badge on its element each frame — follows scroll/layout,
   // hides when the element is hidden or removed (closed modal), reappears when it
-  // returns (re-found by CSS path if the node was rebuilt).
+  // returns (re-found by CSS path if the node was rebuilt). Badges that land on the
+  // same spot are clustered: shown side-by-side (latest centered, the previous two
+  // tucked half-behind on either side), and fanned into a full row on hover so any
+  // one is reachable. Only the badge under the cursor expands to show its note.
   function reflowSpecs() {
+    var mx = lastMouse.x, my = lastMouse.y;
+    var hoverBadge = fiActive ? badgeUnderCursor(mx, my) : null;
+
+    // Pass 1 — resolve visibility + base anchor for each spec.
+    var vis = [];
     for (var i = 0; i < specs.length; i++) {
       var s = specs[i];
       if (!fiActive) { s.wrap.style.display = 'none'; continue; }
@@ -585,9 +659,60 @@ export function getClientScript(options: SpecterOptions): string {
       if (!isVisible(s.el)) { s.wrap.style.display = 'none'; continue; }
       var r = s.el.getBoundingClientRect();
       if (isOccluded(s.el, r)) { s.wrap.style.display = 'none'; continue; } // covered (e.g. behind a modal)
-      s.wrap.style.display = 'block';
-      s.wrap.style.left = (r.left - 10) + 'px'; // -4 circle offset, -6 wrap padding
-      s.wrap.style.top = (r.top - 10) + 'px';
+      s._bx = r.left - 10; s._by = r.top - 10; // -4 circle offset, -6 wrap padding
+      vis.push(s);
+    }
+
+    // Pass 2 — cluster badges whose anchors coincide (within ~16px).
+    var clusters = [];
+    for (var a = 0; a < vis.length; a++) {
+      var sp = vis[a], placed = false;
+      for (var c = 0; c < clusters.length; c++) {
+        var m0 = clusters[c][0];
+        if (Math.abs(sp._bx - m0._bx) < 16 && Math.abs(sp._by - m0._by) < 16) { clusters[c].push(sp); placed = true; break; }
+      }
+      if (!placed) clusters.push([sp]);
+    }
+
+    // Pass 3 — lay out each cluster.
+    var TOP = 2147483644, MID = 2147483643, HIDE = 2147483640;
+    for (var ci = 0; ci < clusters.length; ci++) {
+      var members = clusters[ci];
+      var bx = members[0]._bx, by = members[0]._by;
+      if (members.length === 1) { layoutBadge(members[0], bx, by, 0, 0, TOP, members[0] === hoverBadge); continue; }
+
+      var n = members.length;
+      var key = members.map(function (m) { return specs.indexOf(m); }).sort(function (x, y) { return x - y; }).join(':');
+      var wasHover = !!groupHover[key];
+      var spreadDown = by < window.innerHeight - n * 30; // room below? else fan upward
+
+      // Hysteresis: while fanned, test the tall column bbox; while stacked, the small side-by-side bbox.
+      // Fan-out is a vertical column so an expanded badge grows rightward into empty
+      // space and never covers its siblings (which sit above/below it).
+      var hovered;
+      if (wasHover) {
+        var colTop = spreadDown ? by : by - (n - 1) * 26;
+        hovered = mx >= bx - 8 && mx <= bx + 330 && my >= colTop - 8 && my <= colTop + (n - 1) * 26 + 34;
+      } else {
+        hovered = mx >= bx - 14 && mx <= bx + 46 && my >= by - 8 && my <= by + 40;
+      }
+      groupHover[key] = hovered;
+
+      for (var mi = 0; mi < n; mi++) {
+        var mem = members[mi];
+        if (hovered) {
+          // Fanned: vertical column, creation order, only the cursor's badge expands + rises.
+          var isHov = (mem === hoverBadge);
+          layoutBadge(mem, bx, by, 0, (spreadDown ? 1 : -1) * mi * 26, isHov ? TOP : MID, isHov);
+        } else {
+          // Stacked: latest centered on top; the two before it peek out half-visible.
+          var rank = (n - 1) - mi; // 0 = latest
+          if (rank === 0) layoutBadge(mem, bx, by, 0, 0, TOP, false);
+          else if (rank === 1) layoutBadge(mem, bx, by, -11, 0, MID, false);
+          else if (rank === 2) layoutBadge(mem, bx, by, 11, 0, MID, false);
+          else layoutBadge(mem, bx, by, 0, 0, HIDE, false); // extra ones hide behind center
+        }
+      }
     }
   }
 
@@ -608,17 +733,19 @@ export function getClientScript(options: SpecterOptions): string {
     // wrap carries transparent padding → a larger hover boundary so reaching the
     // trash icon doesn't require pixel-precise aim. reflow offsets for it.
     var wrap = markUI(document.createElement('div'));
-    Object.assign(wrap.style, { position: 'fixed', zIndex: '2147483644', display: 'none', padding: '6px' });
+    Object.assign(wrap.style, { position: 'fixed', zIndex: '2147483644', display: 'none', padding: '6px', transition: 'transform 0.15s ease' });
     var cap2 = document.createElement('div');
     Object.assign(cap2.style, {
       display: 'inline-flex', alignItems: 'center', height: '20px',
       maxWidth: '20px', overflow: 'hidden', background: PURPLE, color: '#fff',
+      border: '2px solid #fff', boxSizing: 'border-box',
       borderRadius: '999px', fontFamily: MONO, whiteSpace: 'nowrap',
       boxShadow: '0 2px 6px rgba(0,0,0,0.35)', cursor: 'pointer', userSelect: 'none',
-      transition: 'max-width 0.2s ease',
+      transition: 'max-width 0.2s ease, transform 0.15s ease',
+      transformOrigin: '10px 10px',
     });
     var num = document.createElement('span');
-    Object.assign(num.style, { width: '20px', flexShrink: '0', textAlign: 'center', fontSize: '13px', fontWeight: '700', lineHeight: '20px' });
+    Object.assign(num.style, { width: '16px', flexShrink: '0', textAlign: 'center', fontSize: '12px', fontWeight: '700', lineHeight: '16px' });
     var noteSpan = document.createElement('span');
     Object.assign(noteSpan.style, { fontSize: '12px', paddingLeft: '3px', maxWidth: '260px', overflow: 'hidden', textOverflow: 'ellipsis' });
     var trash = document.createElement('span');
@@ -630,13 +757,12 @@ export function getClientScript(options: SpecterOptions): string {
     cap2.appendChild(trash);
     wrap.appendChild(cap2);
     document.body.appendChild(wrap);
-    spec.wrap = wrap; spec.num = num; spec.noteSpan = noteSpan;
+    wrap.__spec = spec; // so reflow's cursor hit-test can find which Spec a wrap is
+    spec.wrap = wrap; spec.num = num; spec.noteSpan = noteSpan; spec.cap = cap2;
 
-    // Grace delay on collapse so a brief cursor dip while moving toward the trash
-    // doesn't snap the pill shut.
-    var collapseTimer = null;
-    wrap.addEventListener('mouseenter', function () { clearTimeout(collapseTimer); cap2.style.maxWidth = '320px'; });
-    wrap.addEventListener('mouseleave', function () { collapseTimer = setTimeout(function () { cap2.style.maxWidth = '20px'; }, 220); });
+    // Expansion (circle → note capsule) is driven per-frame in reflowSpecs from the
+    // cursor's exact target, so only the badge under the cursor ever expands.
+    hoverFx(trash, { color: '#fff', transform: 'scale(1.15)' }, { color: '#F3B0C0', transform: 'scale(1)' });
     trash.addEventListener('click', function (e) { e.stopPropagation(); removeSpec(spec); });
     cap2.addEventListener('click', function (e) { e.stopPropagation(); openSpecEditor(spec); });
     updateBadgeContent(spec);
@@ -666,24 +792,280 @@ export function getClientScript(options: SpecterOptions): string {
     createBadge(spec);
     reflowSpecs();
     updatePill();
+    saveSpecs();
     openSpecEditor(spec);
   }
 
   function removeSpec(spec) {
     var i = specs.indexOf(spec);
     if (i < 0) return;
+    if (highlightSpec === spec) highlightSpec = null;
+    if (panelEditSpec === spec) panelEditSpec = null;
     specs.splice(i, 1);
     if (spec.wrap) spec.wrap.remove();
     renumber();
     updatePill();
+    saveSpecs();
   }
 
   function removeAllSpecs() {
     commitEditor();
+    highlightSpec = null;
+    panelEditSpec = null;
     specs.forEach(function (s) { if (s.wrap) s.wrap.remove(); });
     specs.length = 0;
     updatePill();
+    saveSpecs();
   }
+
+  // ─── Reload insurance (localStorage, per-URL, zero network) ──────────────────
+  // Persist only the serializable parts of each Spec; the live element ref and
+  // DOM nodes are rebuilt on restore (re-anchored best-effort via the CSS path).
+  function saveSpecs() {
+    try {
+      if (!specs.length) { localStorage.removeItem(STORAGE_KEY); return; }
+      var data = specs.map(function (s) { return { path: s.path, note: s.note, body: s.body, kind: s.kind }; });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    } catch (e) {}
+  }
+
+  function restoreSpecs() {
+    var data;
+    try { data = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch (e) { return; }
+    if (!Array.isArray(data) || !data.length) return;
+    data.forEach(function (d) {
+      var spec = { el: safeQuery(d.path), path: d.path, note: d.note || '', body: d.body || '', kind: d.kind || 'element' };
+      specs.push(spec);
+      createBadge(spec);
+    });
+    renumber();
+  }
+
+  // Re-anchor if the node detached, then scroll it into view. Returns false when
+  // the element can't be shown (removed / hidden — e.g. behind a closed modal).
+  // The badge enlargement is handled separately via highlightSpec (sustained
+  // while the panel row is hovered), so there's no transient ripple to miss.
+  function revealSpec(spec) {
+    if (!spec.el || !spec.el.isConnected) { var f = safeQuery(spec.path); if (f) spec.el = f; }
+    if (!isVisible(spec.el)) return false;
+    spec.el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    return true;
+  }
+
+  // "Visible" for the panel = renderable (connected, has a box, not display:none) —
+  // NOT whether it's currently in the viewport. Off-screen is fine (that's what the
+  // hover-scroll is for); only a removed / hidden element (e.g. a closed modal) greys out.
+  function specVisible(spec) {
+    if (!spec.el || !spec.el.isConnected) { var f = safeQuery(spec.path); if (f) spec.el = f; }
+    return isVisible(spec.el);
+  }
+
+  // ─── Specs side panel (in-session review) ────────────────────────────────────
+  var panelWrap = markUI(document.createElement('div'));
+  Object.assign(panelWrap.style, {
+    position: 'fixed', top: '0', right: '0', height: '100vh', width: '320px',
+    maxWidth: '86vw', zIndex: '2147483645', boxSizing: 'border-box',
+    transform: 'translateX(100%)', transition: 'transform 0.22s ease',
+    display: 'flex', flexDirection: 'column',
+    background: TIP_BG, color: '#fff', fontFamily: MONO,
+    borderLeft: '1px solid rgba(173,36,211,0.5)', boxShadow: '-8px 0 24px rgba(0,0,0,0.35)',
+  });
+
+  var panelHead = document.createElement('div');
+  Object.assign(panelHead.style, {
+    display: 'flex', alignItems: 'center', gap: '8px', flexShrink: '0',
+    padding: '16px', borderBottom: '1px solid rgba(255,255,255,0.08)',
+  });
+  var panelTitle = document.createElement('span');
+  Object.assign(panelTitle.style, { fontSize: '13px', fontWeight: '700', letterSpacing: '0.02em' });
+  var panelSpacer = document.createElement('span');
+  panelSpacer.style.flex = '1';
+  var copyAllBtn = document.createElement('button');
+  copyAllBtn.textContent = 'Copy all';
+  Object.assign(copyAllBtn.style, {
+    cursor: 'pointer', fontFamily: MONO, fontSize: '11px', fontWeight: '600',
+    color: '#fff', background: PURPLE, border: 'none', borderRadius: '999px',
+    padding: '6px 12px', flexShrink: '0',
+  });
+  copyAllBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (!specs.length) return;
+    navigator.clipboard.writeText(buildSpecsCopyText()).then(function () {
+      copyAllBtn.textContent = 'Copied ✓';
+      setTimeout(function () { copyAllBtn.textContent = 'Copy all'; }, 1200);
+    }).catch(function () {});
+  });
+  hoverFx(copyAllBtn, { background: '#C13AE0' }, { background: PURPLE });
+  var panelClose = document.createElement('span');
+  panelClose.textContent = '×';
+  panelClose.title = 'Close panel (L)';
+  Object.assign(panelClose.style, { cursor: 'pointer', fontSize: '20px', lineHeight: '1', padding: '0 4px', color: '#B9BBC2', flexShrink: '0' });
+  panelClose.addEventListener('click', function (e) { e.stopPropagation(); hidePanel(); });
+  hoverFx(panelClose, { color: '#fff', transform: 'scale(1.2)' }, { color: '#B9BBC2', transform: 'scale(1)' });
+  panelHead.appendChild(panelTitle);
+  panelHead.appendChild(panelSpacer);
+  panelHead.appendChild(copyAllBtn);
+  panelHead.appendChild(panelClose);
+
+  var panelList = document.createElement('div');
+  Object.assign(panelList.style, { flex: '1', overflowY: 'auto', overflowX: 'hidden' });
+
+  panelWrap.appendChild(panelHead);
+  panelWrap.appendChild(panelList);
+  document.body.appendChild(panelWrap);
+
+  function renderPanel() {
+    panelTitle.textContent = specs.length + (specs.length === 1 ? ' Spec' : ' Specs');
+    copyAllBtn.style.display = specs.length ? 'inline-block' : 'none';
+    panelList.textContent = '';
+    if (!specs.length) {
+      var empty = document.createElement('div');
+      empty.textContent = 'No Specs yet — hover an element and press P.';
+      Object.assign(empty.style, { padding: '24px 16px', fontSize: '12px', lineHeight: '18px', color: LABEL });
+      panelList.appendChild(empty);
+      return;
+    }
+    var focusEditor = null, measures = [];
+    specs.forEach(function (spec, i) {
+      var visible = specVisible(spec);
+      var editing = (panelEditSpec === spec);
+      var row = document.createElement('div');
+      Object.assign(row.style, {
+        display: 'flex', alignItems: 'flex-start', gap: '12px', boxSizing: 'border-box',
+        padding: '12px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)',
+        opacity: visible ? '1' : '0.5', transition: 'background 0.12s ease',
+      });
+      var badge = document.createElement('span');
+      badge.textContent = String(i + 1);
+      Object.assign(badge.style, {
+        flexShrink: '0', width: '20px', height: '20px', borderRadius: '999px',
+        background: PURPLE, color: '#fff', fontSize: '12px', fontWeight: '700',
+        border: '2px solid #fff', boxSizing: 'border-box',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      });
+      var content = document.createElement('div');
+      Object.assign(content.style, { flex: '1', minWidth: '0', display: 'flex', flexDirection: 'column', gap: '6px' });
+
+      var selName = (spec.el && spec.el.tagName) ? getSelector(spec.el) : (spec.path.split('>').pop() || '').trim();
+      var meta = document.createElement('div');
+      Object.assign(meta.style, { fontSize: '11px', color: LABEL, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+      meta.textContent = visible ? selName : (selName + ' · not visible');
+
+      if (editing) {
+        // ── UPDATE: inline editor ──
+        var ta = document.createElement('textarea');
+        ta.value = spec.note || '';
+        ta.placeholder = 'Describe the change…';
+        Object.assign(ta.style, {
+          width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.06)',
+          border: '1px solid ' + PURPLE, borderRadius: '6px', color: '#fff', fontFamily: MONO,
+          fontSize: '12px', lineHeight: '17px', padding: '8px', resize: 'none', outline: 'none',
+          overflow: 'hidden', minHeight: '52px',
+        });
+        var grow = function () { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
+        ta.addEventListener('input', grow);
+        var saveEdit = function () { spec.note = ta.value.trim(); updateBadgeContent(spec); panelEditSpec = null; saveSpecs(); updatePill(); };
+        var cancelEdit = function () { panelEditSpec = null; renderPanel(); };
+        ta.addEventListener('keydown', function (ev) {
+          ev.stopPropagation();
+          if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); saveEdit(); }
+          else if (ev.key === 'Escape') { ev.preventDefault(); cancelEdit(); }
+        });
+        var editActions = document.createElement('div');
+        Object.assign(editActions.style, { display: 'flex', gap: '8px', alignItems: 'center' });
+        var saveBtn = document.createElement('button');
+        saveBtn.textContent = 'Save';
+        Object.assign(saveBtn.style, { cursor: 'pointer', fontFamily: MONO, fontSize: '11px', fontWeight: '600', color: '#fff', background: PURPLE, border: 'none', borderRadius: '999px', padding: '5px 12px' });
+        saveBtn.addEventListener('click', function (e) { e.stopPropagation(); saveEdit(); });
+        hoverFx(saveBtn, { background: '#C13AE0' }, { background: PURPLE });
+        var cancelBtn = document.createElement('button');
+        cancelBtn.textContent = 'Cancel';
+        Object.assign(cancelBtn.style, { cursor: 'pointer', fontFamily: MONO, fontSize: '11px', fontWeight: '600', color: '#B9BBC2', background: 'transparent', border: 'none', borderRadius: '999px', padding: '5px 8px' });
+        // mousedown+preventDefault so the textarea's blur-save doesn't beat the cancel
+        cancelBtn.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); cancelEdit(); });
+        hoverFx(cancelBtn, { color: '#fff' }, { color: '#B9BBC2' });
+        editActions.appendChild(saveBtn);
+        editActions.appendChild(cancelBtn);
+        content.appendChild(ta);
+        content.appendChild(meta);
+        content.appendChild(editActions);
+        row.appendChild(badge);
+        row.appendChild(content);
+        focusEditor = function () { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); grow(); };
+      } else {
+        // ── READ: note (collapsed by default, expandable) ──
+        var expanded = !!spec._expanded;
+        var note = document.createElement('div');
+        // Built UNCLAMPED so its true height is measurable after it's in the DOM;
+        // the clamp is applied in the post-render measure pass below (only when the
+        // note actually overflows two lines — otherwise no chevron is shown).
+        Object.assign(note.style, {
+          fontSize: '12px', lineHeight: '16px', color: spec.note ? '#fff' : LABEL,
+          overflow: 'hidden', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap',
+          cursor: spec.note ? 'pointer' : 'default',
+        });
+        note.textContent = spec.note || (spec.kind === 'measure' ? '⬡ measurement' : '— no note —');
+
+        var actions = document.createElement('div');
+        Object.assign(actions.style, { display: 'flex', gap: '2px', flexShrink: '0' });
+        var mkIcon = function (svg, title, color, onClick, onHover) {
+          var b = document.createElement('span');
+          b.innerHTML = svg; b.title = title;
+          Object.assign(b.style, { display: 'flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '6px', cursor: 'pointer', color: color, flexShrink: '0' });
+          hoverFx(b, onHover || { background: 'rgba(255,255,255,0.14)', color: '#fff' }, { background: 'transparent', color: color });
+          b.addEventListener('click', function (e) { e.stopPropagation(); onClick(); });
+          return b;
+        };
+
+        // Show an expand toggle only when the collapsed note actually overflows.
+        var chev = mkIcon(CHEV, expanded ? 'Collapse' : 'Expand', '#B9BBC2', function () { spec._expanded = !spec._expanded; renderPanel(); });
+        chev.firstChild.style.transform = expanded ? 'rotate(180deg)' : 'rotate(0deg)';
+        var editBtn = mkIcon(PENCIL, 'Edit note', '#B9BBC2', function () { panelEditSpec = spec; spec._expanded = true; renderPanel(); });
+        var delBtn = mkIcon(TRASH, 'Delete Spec', '#ED8FA6', function () { removeSpec(spec); }, { background: 'rgba(237,62,97,0.30)', color: '#fff' });
+        actions.appendChild(chev);
+        actions.appendChild(editBtn);
+        actions.appendChild(delBtn);
+
+        content.appendChild(note);
+        content.appendChild(meta);
+        row.appendChild(badge);
+        row.appendChild(content);
+        row.appendChild(actions);
+
+        note.addEventListener('click', function (e) { if (spec.note) { e.stopPropagation(); spec._expanded = !spec._expanded; renderPanel(); } });
+        row.addEventListener('mouseenter', function () {
+          row.style.background = 'rgba(255,255,255,0.05)';
+          if (visible) { highlightSpec = spec; revealSpec(spec); }
+        });
+        row.addEventListener('mouseleave', function () {
+          row.style.background = 'transparent';
+          if (highlightSpec === spec) highlightSpec = null;
+        });
+
+        if (expanded) chev.style.transform = ''; // note stays unclamped; chevron collapses it
+        else measures.push({ note: note, chev: chev }); // measured after all rows are in the DOM
+      }
+      panelList.appendChild(row);
+    });
+
+    // Measure pass — now that rows are laid out, clamp collapsed notes that overflow
+    // 2 lines and hide the expand chevron on notes that fit.
+    measures.forEach(function (m) {
+      if (m.note.scrollHeight > 34) { // > two 16px lines (+2 slack)
+        m.note.style.display = '-webkit-box';
+        m.note.style.whiteSpace = 'normal';
+        m.note.style.setProperty('-webkit-box-orient', 'vertical');
+        m.note.style.setProperty('-webkit-line-clamp', '2');
+      } else {
+        m.chev.style.display = 'none';
+      }
+    });
+    if (focusEditor) setTimeout(focusEditor, 0);
+  }
+
+  function showPanel() { panelOpen = true; renderPanel(); panelWrap.style.transform = 'translateX(0)'; }
+  function hidePanel() { panelOpen = false; panelEditSpec = null; panelWrap.style.transform = 'translateX(100%)'; }
+  function togglePanel() { if (panelOpen) hidePanel(); else if (fiActive) showPanel(); }
 
   // ─── Spec editor (annotation box: add / edit / delete) ───────────────────────
   function commitEditor() { if (editorCommit) editorCommit(); }
@@ -729,6 +1111,7 @@ export function getClientScript(options: SpecterOptions): string {
       background: 'transparent', border: 'none', borderRadius: '6px',
       color: '#ED8FA6', cursor: 'pointer',
     });
+    hoverFx(del, { color: '#fff', background: 'rgba(237,62,97,0.35)' }, { color: '#ED8FA6', background: 'transparent' });
     // Hidden mirror to measure single-line text width so the field grows as you type.
     var meas = document.createElement('span');
     Object.assign(meas.style, { position: 'absolute', visibility: 'hidden', whiteSpace: 'pre', pointerEvents: 'none', fontFamily: MONO, fontSize: '12px', left: '-9999px', top: '0' });
@@ -773,6 +1156,7 @@ export function getClientScript(options: SpecterOptions): string {
       updateBadgeContent(spec);
       closeEditorDom();
       updatePill();
+      saveSpecs();
     }
     editorCommit = commit;
 
@@ -1128,9 +1512,9 @@ export function getClientScript(options: SpecterOptions): string {
 
     if (!fiActive) return;
 
-    // Spec editor open: let the textarea own its keys (Enter/Esc, native copy,
-    // and the letter "p") — never treat them as Specter shortcuts.
-    if (editorEl) return;
+    // Spec editor open (on-page OR panel inline): let the textarea own its keys
+    // (Enter/Esc, native copy, the letter "p") — never treat them as shortcuts.
+    if (editorEl || panelEditSpec) return;
 
     if (e.key === 'Alt' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
       optionHeld = true;
@@ -1177,8 +1561,16 @@ export function getClientScript(options: SpecterOptions): string {
       return;
     }
 
+    // L — toggle the Specs review panel.
+    if (e.key === 'l' || e.key === 'L') {
+      e.preventDefault();
+      togglePanel();
+      return;
+    }
+
     // Esc only HIDES the plugin — Specs persist and return on reactivate.
     if (e.key === 'Escape') {
+      if (panelOpen) { hidePanel(); return; }
       deactivate();
       return;
     }
@@ -1208,6 +1600,8 @@ export function getClientScript(options: SpecterOptions): string {
       if (msg && msg.type === 'specter-toggle') window.__specterToggle();
     });
   }
+
+  restoreSpecs(); // rebuild any Specs saved from a previous load of this URL
 
   console.log('%c👻 Specter — Ctrl+Option+Z to toggle', 'color:#aaa;font-size:11px;');
 })();`;
