@@ -21,6 +21,7 @@ export function getClientScript(options: SpecterOptions): string {
   var MONO = "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace";
   var ZAP = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>';
   var PENCIL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path><path d="m15 5 4 4"></path></svg>';
+  var TRASH = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>';
   var ACTIVATE = ${JSON.stringify(activateShortcut)};
 
   // ─── State ────────────────────────────────────────────────────────────────
@@ -38,14 +39,22 @@ export function getClientScript(options: SpecterOptions): string {
   var copiedTimer = null;
   var flashTimer = null;
   var lastMouse = { x: 0, y: 0 };
-  var selectedEls = [];
-  var selectedBadges = [];
-  var noteMap = new Map();
-  var noteInputEl = null;
-  var noteTargetEl = null;
+  // Specs = the unified marks (pick + optional annotation). Each:
+  //   { el, path, note, body, kind:'element'|'measure', wrap, pill, num, noteSpan }
+  var specs = [];
+  var editorEl = null;      // the open Spec-editor box, or null
+  var editorSpec = null;    // the Spec being edited
+  var editorCommit = null;  // idempotent commit fn for the open editor
+  var rafId = null;         // reflow loop handle
+
+  // Tag every Specter-owned node so inspect/hover logic can skip its own UI
+  // (no "Specter-ception" — never inspect our own overlays).
+  function markUI(el) { el.setAttribute('data-specter-ui', ''); return el; }
+  function isUI(el) { return !!(el && el.closest && el.closest('[data-specter-ui]')); }
 
   // ─── Tooltip ──────────────────────────────────────────────────────────────
   var tooltip = document.createElement('div');
+  markUI(tooltip);
   Object.assign(tooltip.style, {
     position: 'fixed',
     zIndex: '2147483646',
@@ -65,6 +74,7 @@ export function getClientScript(options: SpecterOptions): string {
 
   // Measure overlay
   var measureOverlay = document.createElement('div');
+  markUI(measureOverlay);
   Object.assign(measureOverlay.style, {
     position: 'fixed',
     inset: '0',
@@ -76,6 +86,7 @@ export function getClientScript(options: SpecterOptions): string {
 
   // ─── Pill ─────────────────────────────────────────────────────────────────
   var pillWrap = document.createElement('div');
+  markUI(pillWrap);
   Object.assign(pillWrap.style, {
     position: 'fixed',
     bottom: '4px',
@@ -146,6 +157,23 @@ export function getClientScript(options: SpecterOptions): string {
   var pillText = document.createElement('span');
   Object.assign(pillText.style, { display: 'none', color: '#f3d9fb' });
 
+  var clearBtn = document.createElement('span');
+  clearBtn.textContent = '✕ Clear';
+  clearBtn.title = 'Remove all Specs';
+  Object.assign(clearBtn.style, {
+    display: 'none',
+    cursor: 'pointer',
+    color: '#fff',
+    fontSize: '11px',
+    fontWeight: '600',
+    flexShrink: '0',
+    padding: '2px 8px',
+    marginLeft: '2px',
+    borderRadius: '999px',
+    background: 'rgba(255,255,255,0.16)',
+  });
+  clearBtn.addEventListener('click', function (e) { e.stopPropagation(); removeAllSpecs(); });
+
   var chevron = document.createElement('span');
   chevron.textContent = '›';
   chevron.title = 'Move to other side';
@@ -162,6 +190,7 @@ export function getClientScript(options: SpecterOptions): string {
 
   pill.appendChild(iconBtn);
   pill.appendChild(pillText);
+  pill.appendChild(clearBtn);
   pill.appendChild(chevron);
   pillWrap.appendChild(pill);
   document.body.appendChild(pillWrap);
@@ -176,7 +205,7 @@ export function getClientScript(options: SpecterOptions): string {
     closeEl.style.opacity = '1';
   });
   pillWrap.addEventListener('mouseleave', function () {
-    if (selectedEls.length === 0 && !pinEl) collapsePill();
+    if (specs.length === 0 && !pinEl) collapsePill();
     zapEl.style.transform = 'rotate(0deg)';
     zapEl.style.opacity = '1';
     closeEl.style.opacity = '0';
@@ -196,17 +225,18 @@ export function getClientScript(options: SpecterOptions): string {
   }
 
   function expandPill(text) {
-    pill.style.maxWidth = '760px';
+    pill.style.maxWidth = '820px';
     pillText.style.display = 'inline';
     chevron.style.display = 'inline';
+    clearBtn.style.display = specs.length > 0 ? 'inline' : 'none';
     pillExpanded = true;
     if (text) { pillText.textContent = text; return; }
-    if (selectedEls.length > 0) {
-      pillText.textContent = selectedEls.length + ' selected · N annotate · Cmd+C copy all · Esc clear';
+    if (specs.length > 0) {
+      pillText.textContent = specs.length + (specs.length === 1 ? ' Spec' : ' Specs') + ' · P add · click a Spec to edit · Cmd+C copy';
     } else if (measureMode) {
-      pillText.textContent = 'Measure · hover distances · M pin · Cmd+C copy · Option toggle';
+      pillText.textContent = 'Measure · hover distances · P mark · M pin · Cmd+C copy · Option toggle';
     } else {
-      pillText.textContent = 'Properties · hover · P pick · N annotate · Cmd+C copy · Option measure';
+      pillText.textContent = 'Properties · P mark / annotate · Cmd+C copy · Option measure';
     }
   }
 
@@ -214,6 +244,7 @@ export function getClientScript(options: SpecterOptions): string {
     pill.style.maxWidth = '32px';
     pillText.style.display = 'none';
     chevron.style.display = 'none';
+    clearBtn.style.display = 'none';
     pillExpanded = false;
   }
 
@@ -223,26 +254,35 @@ export function getClientScript(options: SpecterOptions): string {
     expandPill(text);
     clearTimeout(flashTimer);
     flashTimer = setTimeout(function () {
-      if (!pillWrap.matches(':hover') && selectedEls.length === 0 && !pinEl) collapsePill();
+      if (!pillWrap.matches(':hover') && specs.length === 0 && !pinEl) collapsePill();
       else expandPill();
     }, 1200);
   }
 
+  // Show/collapse the pill based on whether any Specs exist.
+  function updatePill() {
+    if (specs.length > 0) expandPill();
+    else if (!pillWrap.matches(':hover')) collapsePill();
+  }
+
   // ─── Activate / Deactivate ────────────────────────────────────────────────
+  // Esc / toggle only HIDE the plugin — Specs persist and reappear on reactivate.
   function activate() {
     fiActive = true;
     measureMode = false;
     pillWrap.style.display = 'block';
     document.body.style.cursor = 'crosshair';
-    collapsePill();
+    updatePill();
+    startLoop();
+    reflowSpecs();
   }
 
   function deactivate() {
+    commitEditor();
     fiActive = false;
     measureMode = false;
     optionHeld = false;
     lastHovered = null;
-    clearSelection();
     clearPin();
     clearHoverOutline();
     clearMeasureTargetHL();
@@ -250,6 +290,8 @@ export function getClientScript(options: SpecterOptions): string {
     document.body.style.cursor = '';
     hideTooltip();
     clearMeasureOverlay();
+    stopLoop();
+    reflowSpecs(); // hides all Spec badges while inactive (data kept)
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -326,81 +368,6 @@ export function getClientScript(options: SpecterOptions): string {
     return null;
   }
 
-  // Collapse a rule's declarations to their shortest lossless form: drop
-  // 'initial' (= default, no signal) and always-'normal' noise, and fold
-  // side/corner longhands back into shorthands (margin/padding/radius/gap/transition).
-  function cleanDecls(style) {
-    var m = {}, order = [];
-    for (var i = 0; i < style.length; i++) {
-      var p = style[i];
-      var v = style.getPropertyValue(p);
-      if (!v) continue;
-      if (v === 'initial') continue;
-      if (p === 'transition-behavior') continue;
-      if (!(p in m)) order.push(p);
-      m[p] = v;
-    }
-    var used = {}, collapses = {};
-    function four(name, t, r, b, l) {
-      if (m[t] === undefined || m[r] === undefined || m[b] === undefined || m[l] === undefined) return;
-      used[t] = used[r] = used[b] = used[l] = 1;
-      var a = m[t], c = m[r], d = m[b], e = m[l], sh;
-      if (a === c && c === d && d === e) sh = a;
-      else if (a === d && c === e) sh = a + ' ' + c;
-      else if (c === e) sh = a + ' ' + c + ' ' + d;
-      else sh = a + ' ' + c + ' ' + d + ' ' + e;
-      collapses[t] = name + ': ' + sh;
-    }
-    four('margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left');
-    four('padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left');
-    four('border-radius', 'border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius');
-    if (m['row-gap'] !== undefined && m['column-gap'] !== undefined) {
-      var g = m['row-gap'] === m['column-gap'] ? m['row-gap'] : m['row-gap'] + ' ' + m['column-gap'];
-      collapses['row-gap'] = 'gap: ' + g; used['row-gap'] = used['column-gap'] = 1;
-    }
-    if (m['transition-property'] !== undefined) {
-      var tr = 'transition: ' + m['transition-property'];
-      if (m['transition-duration'] !== undefined) tr += ' ' + m['transition-duration'];
-      if (m['transition-timing-function'] !== undefined) tr += ' ' + m['transition-timing-function'];
-      if (m['transition-delay'] !== undefined && m['transition-delay'] !== '0s') tr += ' ' + m['transition-delay'];
-      collapses['transition-property'] = tr;
-      used['transition-property'] = used['transition-duration'] = used['transition-timing-function'] = used['transition-delay'] = 1;
-    }
-    var out = [];
-    order.forEach(function (p) {
-      if (collapses[p]) { out.push('  ' + collapses[p] + ';'); return; }
-      if (used[p]) return;
-      out.push('  ' + p + ': ' + m[p] + ';');
-    });
-    return out;
-  }
-
-  function getMatchingRules(el) {
-    var results = [];
-    try {
-      for (var s = 0; s < document.styleSheets.length; s++) {
-        var sheet = document.styleSheets[s];
-        var rules;
-        try { rules = sheet.cssRules; } catch (e) { continue; }
-        if (!rules) continue;
-        for (var r = 0; r < rules.length; r++) {
-          var rule = rules[r];
-          if (rule.type !== 1) continue;
-          var sel = rule.selectorText;
-          if (!sel) continue;
-          if (/^[*,]|^:root|^html|^body$|^::before|^::after/.test(sel.trim())) continue;
-          try {
-            if (el.matches(sel)) {
-              var props = cleanDecls(rule.style);
-              if (props.length) results.push(sel + ' {\\n' + props.join('\\n') + '\\n}');
-            }
-          } catch (e) {}
-        }
-      }
-    } catch (e) {}
-    return results;
-  }
-
   function getSelector(el) {
     var parts = [];
     var cur = el;
@@ -427,7 +394,7 @@ export function getClientScript(options: SpecterOptions): string {
     var cs = getComputedStyle(el);
     var rect = el.getBoundingClientRect();
     var ff = cs.fontFamily.split(',')[0].replace(/['"]/g, '').trim();
-    var raw = el.textContent ? el.textContent.trim() : '';
+    var raw = el.textContent ? el.textContent.replace(/\\s+/g, ' ').trim() : '';
     return {
       el: el,
       tag: el.tagName.toLowerCase(),
@@ -448,7 +415,6 @@ export function getClientScript(options: SpecterOptions): string {
       display: ['flex', 'grid', 'inline-flex', 'inline-grid'].indexOf(cs.display) >= 0 ? cs.display : null,
       gap: (cs.gap && cs.gap !== 'normal') ? cs.gap : null,
       flexDir: (cs.display.indexOf('flex') >= 0 && cs.flexDirection !== 'row') ? cs.flexDirection : null,
-      rules: getMatchingRules(el),
     };
   }
 
@@ -482,42 +448,44 @@ export function getClientScript(options: SpecterOptions): string {
     return h;
   }
 
+  // Lean copy: just enough to fix the issue — which element, and its current
+  // key values. Deliberately NO full CSS-rule dump (an AI with the repo finds
+  // the rule from the selector; one without it can't edit source anyway).
   function buildLLMClipboard(data) {
-    var lines = ['[Specter]'];
+    // Identity: tag + component/styleKey + text + dims. Classes live in the
+    // selector line, so don't repeat them here.
     var head = '<' + data.tag + '>';
-    if (data.id) head += '#' + data.id;
-    if (data.classes.length) head += '.' + data.classes.join('.');
     if (data.component) head += ' ' + data.component;
     if (data.styleKey) head += ' [' + data.styleKey + ']';
+    if (data.text) head += ' "' + data.text + (data.textTrunc ? '…' : '') + '"';
     head += ' ' + data.width + '×' + data.height;
-    lines.push(head);
-    if (data.text) lines.push('"' + data.text + (data.textTrunc ? '…' : '') + '"');
-    lines.push('font: ' + data.font.family + ' ' + data.font.weight + ' ' + data.font.size + '/' + data.font.lineHeight);
-    if (data.color) lines.push('color: ' + data.color.label);
-    if (data.bg) lines.push('bg: ' + data.bg.label);
-    if (data.padding) lines.push('padding: ' + data.padding.value);
-    if (data.margin) lines.push('margin: ' + data.margin.value);
-    if (data.radius) lines.push('radius: ' + data.radius);
+
+    // One compact line of the values that could be the target of the change.
+    var props = ['font: ' + data.font.family + ' ' + data.font.weight + ' ' + data.font.size + '/' + data.font.lineHeight];
+    if (data.color) props.push('color: ' + data.color.label);
+    if (data.bg) props.push('bg: ' + data.bg.label);
+    if (data.padding) props.push('padding: ' + data.padding.value);
+    if (data.margin) props.push('margin: ' + data.margin.value);
+    if (data.radius) props.push('radius: ' + data.radius);
     if (data.display) {
       var d = 'display: ' + data.display;
-      if (data.gap) d += '  gap: ' + data.gap;
-      if (data.flexDir) d += '  dir: ' + data.flexDir;
-      lines.push(d);
+      if (data.gap) d += ' gap ' + data.gap;
+      if (data.flexDir) d += ' ' + data.flexDir;
+      props.push(d);
     }
-    lines.push('selector: ' + getSelector(data.el));
-    var out = lines.join('\\n');
-    if (data.rules && data.rules.length) out += '\\n\\n--- CSS Rules ---\\n' + data.rules.join('\\n\\n');
-    return out;
+
+    return ['[Specter]', head, 'selector: ' + getSelector(data.el), props.join('  ·  ')].join('\\n');
   }
 
-  function buildMultiSelectCopyText() {
-    var n = selectedEls.length;
-    return selectedEls.map(function (el, i) {
-      var body = buildLLMClipboard(buildInfo(el));
-      var note = noteMap.get(el);
-      var header = n > 1 ? '[Specter ' + (i + 1) + '/' + n + ']' : '[Specter]';
-      if (note) header += '\\n✏️ CHANGE: ' + note;
-      return body.replace('[Specter]', header);
+  // Copy every Spec — using each Spec's body snapshotted at mark time, so Specs
+  // whose element is currently hidden (e.g. inside a closed modal) still copy.
+  function buildSpecsCopyText() {
+    var n = specs.length;
+    return specs.map(function (spec, i) {
+      var tag = spec.kind === 'measure' ? 'Specter Measure' : 'Specter';
+      var header = n > 1 ? '[' + tag + ' ' + (i + 1) + '/' + n + ']' : '[' + tag + ']';
+      if (spec.note) header += '\\n✏️ CHANGE: ' + spec.note;
+      return spec.body.replace(/^\\[Specter[^\\]]*\\]/, function () { return header; });
     }).join('\\n\\n' + Array(41).join('─') + '\\n\\n');
   }
 
@@ -567,233 +535,260 @@ export function getClientScript(options: SpecterOptions): string {
     positionTooltip(lastMouse.x, lastMouse.y);
   }
 
-  // ─── Multi-select ─────────────────────────────────────────────────────────
-  function makeBadge(el, index, note) {
-    var rect = el.getBoundingClientRect();
-    var wrap = document.createElement('div');
-    Object.assign(wrap.style, {
-      position: 'fixed',
-      left: (rect.left - 4) + 'px',
-      top: (rect.top - 4) + 'px',
-      zIndex: '2147483644',
-      pointerEvents: 'none',
-      display: 'flex',
-      alignItems: 'flex-start',
-      gap: '4px',
-    });
-    var badge = document.createElement('div');
-    badge.textContent = String(index + 1);
-    Object.assign(badge.style, {
-      width: '20px',
-      height: '20px',
-      flexShrink: '0',
-      background: PURPLE,
-      color: '#fff',
-      fontSize: '11px',
-      fontWeight: '700',
-      fontFamily: MONO,
-      borderRadius: '50%',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
-    });
-    wrap.appendChild(badge);
-    if (note) {
-      var chip = document.createElement('div');
-      chip.textContent = '✏️ ' + (note.length > 32 ? note.slice(0, 32) + '…' : note);
-      Object.assign(chip.style, {
-        maxWidth: '240px',
-        background: TIP_BG,
-        color: '#fff',
-        fontSize: '10px',
-        lineHeight: '16px',
-        fontFamily: MONO,
-        padding: '2px 6px',
-        borderRadius: '4px',
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        border: '1px solid ' + PURPLE,
-        boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
-      });
-      wrap.appendChild(chip);
+  // ─── Specs (marks: pick + optional annotation) ──────────────────────────────
+  // A stable-ish CSS path so a Spec can re-find its element if the DOM node is
+  // rebuilt (e.g. a modal that recreates its contents on reopen).
+  function elementPath(el) {
+    if (!el || el.nodeType !== 1) return '';
+    var parts = [], cur = el;
+    while (cur && cur.nodeType === 1 && cur !== document.body && parts.length < 6) {
+      if (cur.id) { try { parts.unshift('#' + CSS.escape(cur.id)); } catch (e) { parts.unshift('#' + cur.id); } break; }
+      var seg = cur.tagName.toLowerCase();
+      var parent = cur.parentElement;
+      if (parent) seg += ':nth-child(' + (Array.prototype.indexOf.call(parent.children, cur) + 1) + ')';
+      parts.unshift(seg);
+      cur = cur.parentElement;
     }
+    return parts.join(' > ');
+  }
+
+  function safeQuery(sel) { try { return sel ? document.querySelector(sel) : null; } catch (e) { return null; } }
+
+  function isVisible(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.checkVisibility) { try { if (!el.checkVisibility()) return false; } catch (e) {} }
+    var r = el.getBoundingClientRect();
+    return r.width > 0 || r.height > 0;
+  }
+
+  // Is the element's center covered by something else (e.g. a modal overlay)?
+  // Uses elementsFromPoint and skips Specter's own UI so a badge over the point
+  // doesn't count as occluding its own element.
+  function isOccluded(el, r) {
+    var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) return true;
+    var stack = document.elementsFromPoint(cx, cy);
+    var top = null;
+    for (var i = 0; i < stack.length; i++) { if (!isUI(stack[i])) { top = stack[i]; break; } }
+    if (!top) return true;
+    return !(top === el || el.contains(top) || top.contains(el));
+  }
+
+  // Position every Spec badge on its element each frame — follows scroll/layout,
+  // hides when the element is hidden or removed (closed modal), reappears when it
+  // returns (re-found by CSS path if the node was rebuilt).
+  function reflowSpecs() {
+    for (var i = 0; i < specs.length; i++) {
+      var s = specs[i];
+      if (!fiActive) { s.wrap.style.display = 'none'; continue; }
+      if (!s.el || !s.el.isConnected) { var f = safeQuery(s.path); if (f) s.el = f; }
+      if (!isVisible(s.el)) { s.wrap.style.display = 'none'; continue; }
+      var r = s.el.getBoundingClientRect();
+      if (isOccluded(s.el, r)) { s.wrap.style.display = 'none'; continue; } // covered (e.g. behind a modal)
+      s.wrap.style.display = 'block';
+      s.wrap.style.left = (r.left - 10) + 'px'; // -4 circle offset, -6 wrap padding
+      s.wrap.style.top = (r.top - 10) + 'px';
+    }
+  }
+
+  function startLoop() { if (rafId == null) (function loop() { reflowSpecs(); rafId = requestAnimationFrame(loop); })(); }
+  function stopLoop() { if (rafId != null) { cancelAnimationFrame(rafId); rafId = null; } }
+
+  function renumber() { for (var i = 0; i < specs.length; i++) specs[i].num.textContent = String(i + 1); }
+
+  function updateBadgeContent(spec) {
+    spec.num.textContent = String(specs.indexOf(spec) + 1);
+    if (spec.note) spec.noteSpan.textContent = '✏️ ' + spec.note;
+    else spec.noteSpan.textContent = spec.kind === 'measure' ? '⬡ measure' : '';
+  }
+
+  // A Spec badge: a circle showing its number that expands (capsule morph) on
+  // hover to preview its note, and opens the editor when clicked.
+  function createBadge(spec) {
+    // wrap carries transparent padding → a larger hover boundary so reaching the
+    // trash icon doesn't require pixel-precise aim. reflow offsets for it.
+    var wrap = markUI(document.createElement('div'));
+    Object.assign(wrap.style, { position: 'fixed', zIndex: '2147483644', display: 'none', padding: '6px' });
+    var cap2 = document.createElement('div');
+    Object.assign(cap2.style, {
+      display: 'inline-flex', alignItems: 'center', height: '20px',
+      maxWidth: '20px', overflow: 'hidden', background: PURPLE, color: '#fff',
+      borderRadius: '999px', fontFamily: MONO, whiteSpace: 'nowrap',
+      boxShadow: '0 2px 6px rgba(0,0,0,0.35)', cursor: 'pointer', userSelect: 'none',
+      transition: 'max-width 0.2s ease',
+    });
+    var num = document.createElement('span');
+    Object.assign(num.style, { width: '20px', flexShrink: '0', textAlign: 'center', fontSize: '13px', fontWeight: '700', lineHeight: '20px' });
+    var noteSpan = document.createElement('span');
+    Object.assign(noteSpan.style, { fontSize: '12px', paddingLeft: '3px', maxWidth: '260px', overflow: 'hidden', textOverflow: 'ellipsis' });
+    var trash = document.createElement('span');
+    trash.innerHTML = TRASH;
+    trash.title = 'Delete this Spec';
+    Object.assign(trash.style, { display: 'flex', alignItems: 'center', flexShrink: '0', padding: '0 8px 0 6px', color: '#F3B0C0', cursor: 'pointer' });
+    cap2.appendChild(num);
+    cap2.appendChild(noteSpan);
+    cap2.appendChild(trash);
+    wrap.appendChild(cap2);
     document.body.appendChild(wrap);
-    return wrap;
+    spec.wrap = wrap; spec.num = num; spec.noteSpan = noteSpan;
+
+    // Grace delay on collapse so a brief cursor dip while moving toward the trash
+    // doesn't snap the pill shut.
+    var collapseTimer = null;
+    wrap.addEventListener('mouseenter', function () { clearTimeout(collapseTimer); cap2.style.maxWidth = '320px'; });
+    wrap.addEventListener('mouseleave', function () { collapseTimer = setTimeout(function () { cap2.style.maxWidth = '20px'; }, 220); });
+    trash.addEventListener('click', function (e) { e.stopPropagation(); removeSpec(spec); });
+    cap2.addEventListener('click', function (e) { e.stopPropagation(); openSpecEditor(spec); });
+    updateBadgeContent(spec);
   }
 
-  function rebuildBadges() {
-    selectedBadges.forEach(function (b) { b.remove(); });
-    selectedBadges.length = 0;
-    selectedEls.forEach(function (el, i) {
-      selectedBadges.push(makeBadge(el, i, noteMap.get(el)));
-    });
+  function findElementSpec(el) {
+    for (var i = 0; i < specs.length; i++) if (specs[i].kind === 'element' && specs[i].el === el) return specs[i];
+    return null;
   }
 
-  function toggleSelection(el) {
-    var idx = selectedEls.indexOf(el);
-    if (idx >= 0) {
-      selectedEls.splice(idx, 1);
-      el.style.outline = '';
-      noteMap.delete(el);
+  // Press P → create a Spec (+ open its annotation box). Measure mode captures
+  // distances instead of properties; a pinned measurement anchors on the pin.
+  function markSpec(anchorEl) {
+    var kind = 'element', el = anchorEl, body;
+    if (measureMode) {
+      kind = 'measure';
+      if (pinEl && lastHovered && lastHovered !== pinEl) { el = pinEl; body = buildMeasureCopyText(pinEl, lastHovered); }
+      else { el = anchorEl; body = buildNeighborCopyText(anchorEl); }
     } else {
-      selectedEls.push(el);
-      el.style.outline = '2px solid ' + PURPLE;
-      el.style.outlineOffset = '-1px';
+      if (findElementSpec(anchorEl)) return; // P over an already-Spec'd element → nothing
+      body = buildLLMClipboard(buildInfo(anchorEl));
     }
-    rebuildBadges();
-    updatePillForSelection();
+    clearHoverOutline();
+    hideTooltip();
+    var spec = { el: el, path: elementPath(el), note: '', body: body, kind: kind };
+    specs.push(spec);
+    createBadge(spec);
+    reflowSpecs();
+    updatePill();
+    openSpecEditor(spec);
   }
 
-  function clearSelection() {
-    closeNoteInput();
-    selectedEls.forEach(function (el) { el.style.outline = ''; el.style.outlineOffset = ''; });
-    selectedEls.length = 0;
-    selectedBadges.forEach(function (b) { b.remove(); });
-    selectedBadges.length = 0;
-    noteMap.clear();
+  function removeSpec(spec) {
+    var i = specs.indexOf(spec);
+    if (i < 0) return;
+    specs.splice(i, 1);
+    if (spec.wrap) spec.wrap.remove();
+    renumber();
+    updatePill();
   }
 
-  function updatePillForSelection() {
-    if (selectedEls.length > 0) expandPill();
-    else if (!pillWrap.matches(':hover')) collapsePill();
+  function removeAllSpecs() {
+    commitEditor();
+    specs.forEach(function (s) { if (s.wrap) s.wrap.remove(); });
+    specs.length = 0;
+    updatePill();
   }
 
-  // ─── Annotations (inline change notes) ──────────────────────────────────────
-  function openNoteInput(el) {
-    closeNoteInput();
-    if (selectedEls.indexOf(el) < 0) {
-      clearHoverOutline();
-      hideTooltip();
-      selectedEls.push(el);
-      el.style.outline = '2px solid ' + PURPLE;
-      el.style.outlineOffset = '-1px';
-    }
-    noteTargetEl = el;
-    var rect = el.getBoundingClientRect();
+  // ─── Spec editor (annotation box: add / edit / delete) ───────────────────────
+  function commitEditor() { if (editorCommit) editorCommit(); }
+  function closeEditorDom() {
+    if (editorEl) { editorEl.remove(); editorEl = null; }
+    editorSpec = null; editorCommit = null;
+  }
 
-    var box = document.createElement('div');
+  // Open a Spec's annotation box: prefilled with its note, grows as you type,
+  // saves on Enter or blur (click-away), and carries a Delete button.
+  function openSpecEditor(spec) {
+    commitEditor(); // commit whatever editor is already open
+    if (!spec || !spec.el) return;
+    editorSpec = spec;
+    var rect = spec.el.getBoundingClientRect();
+
+    var box = markUI(document.createElement('div'));
     Object.assign(box.style, {
-      position: 'fixed',
-      zIndex: '2147483647',
-      display: 'inline-flex',
-      alignItems: 'flex-start',
-      gap: '8px',
-      boxSizing: 'border-box',
-      background: TIP_BG,
-      border: '1px solid ' + PURPLE,
-      borderRadius: '8px',
-      padding: '11px 12px',
-      boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
-      fontFamily: MONO,
+      position: 'fixed', zIndex: '2147483647', display: 'inline-flex',
+      alignItems: 'flex-start', gap: '8px', boxSizing: 'border-box',
+      background: TIP_BG, border: '1px solid ' + PURPLE, borderRadius: '8px',
+      padding: '11px 12px', boxShadow: '0 4px 16px rgba(0,0,0,0.35)', fontFamily: MONO,
     });
     var pen = document.createElement('span');
     pen.innerHTML = PENCIL;
-    Object.assign(pen.style, {
-      display: 'flex',
-      alignItems: 'center',
-      flexShrink: '0',
-      marginTop: '2px',
-      color: '#E0A3F5',
-    });
+    Object.assign(pen.style, { display: 'flex', alignItems: 'center', flexShrink: '0', marginTop: '2px', color: '#E0A3F5' });
     var input = document.createElement('textarea');
     input.rows = 1;
     input.placeholder = 'Describe the change… (Enter to save)';
-    input.value = noteMap.get(el) || '';
+    input.value = spec.note || '';
     Object.assign(input.style, {
-      flexShrink: '0',
-      background: 'transparent',
-      border: 'none',
-      outline: 'none',
-      resize: 'none',
-      overflow: 'hidden',
-      color: '#fff',
-      fontFamily: MONO,
-      fontSize: '12px',
-      lineHeight: '18px',
-      padding: '0',
-      margin: '0',
-      whiteSpace: 'pre-wrap',
-      overflowWrap: 'anywhere',
+      flexShrink: '0', background: 'transparent', border: 'none', outline: 'none',
+      resize: 'none', overflow: 'hidden', color: '#fff', fontFamily: MONO,
+      fontSize: '12px', lineHeight: '18px', padding: '0', margin: '0',
+      whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+    });
+    var del = document.createElement('button');
+    del.innerHTML = TRASH;
+    del.title = 'Delete this Spec';
+    Object.assign(del.style, {
+      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: '0',
+      width: '24px', height: '24px', marginTop: '-2px', padding: '0',
+      background: 'transparent', border: 'none', borderRadius: '6px',
+      color: '#ED8FA6', cursor: 'pointer',
     });
     // Hidden mirror to measure single-line text width so the field grows as you type.
     var meas = document.createElement('span');
-    Object.assign(meas.style, {
-      position: 'absolute',
-      visibility: 'hidden',
-      whiteSpace: 'pre',
-      pointerEvents: 'none',
-      fontFamily: MONO,
-      fontSize: '12px',
-      left: '-9999px',
-      top: '0',
-    });
+    Object.assign(meas.style, { position: 'absolute', visibility: 'hidden', whiteSpace: 'pre', pointerEvents: 'none', fontFamily: MONO, fontSize: '12px', left: '-9999px', top: '0' });
     box.appendChild(pen);
     box.appendChild(input);
+    box.appendChild(del);
     box.appendChild(meas);
     document.body.appendChild(box);
-    noteInputEl = box;
+    editorEl = box;
 
     var margin = 8;
     function textW(t) { meas.textContent = t; return meas.offsetWidth; }
-
-    // Anchor to the element; the box is repositioned around this as it grows.
     var anchorL = rect.left, anchorT = rect.top, anchorB = rect.bottom;
 
     function sizeAndPosition() {
       var vw = window.innerWidth, vh = window.innerHeight;
       var maxBoxW = Math.min(560, vw - margin * 2);
-      var maxTextW = Math.max(120, maxBoxW - 55);        // room for icon + gaps + padding
+      var maxTextW = Math.max(120, maxBoxW - 90); // room for pencil + delete + gaps + padding
       var placeholderW = textW(input.placeholder);
       var minTextW = Math.min(placeholderW, maxTextW);
-      var maxTaH = Math.min(14 * 18, Math.max(18, (vh - margin * 2) - 24)); // cap ~14 lines, never past viewport
-
-      // Width: grow with content up to the max, then wrapping takes over.
+      var maxTaH = Math.min(14 * 18, Math.max(18, (vh - margin * 2) - 24)); // cap ~14 lines
       var single = textW(input.value || input.placeholder) + 3;
       input.style.width = Math.min(Math.max(single, minTextW), maxTextW) + 'px';
-      // Height: fit wrapped content, scroll only in the extreme case.
       input.style.height = 'auto';
       var h = input.scrollHeight;
       if (h > maxTaH) { input.style.height = maxTaH + 'px'; input.style.overflowY = 'auto'; }
       else { input.style.height = h + 'px'; input.style.overflowY = 'hidden'; }
-
-      // Keep the whole box on screen.
       var bw = box.offsetWidth, bh = box.offsetHeight;
       var left = Math.min(Math.max(anchorL, margin), Math.max(margin, vw - bw - margin));
-      var top = anchorT - bh - 8;                        // prefer sitting above the element
-      if (top < margin) top = anchorB + 8;               // otherwise below it
+      var top = anchorT - bh - 8;              // prefer above the element
+      if (top < margin) top = anchorB + 8;     // otherwise below
       if (top + bh > vh - margin) top = Math.max(margin, vh - bh - margin);
       box.style.left = left + 'px';
       box.style.top = top + 'px';
     }
     sizeAndPosition();
 
+    var done = false;
+    function commit() {
+      if (done) return; done = true;
+      spec.note = input.value.trim();
+      updateBadgeContent(spec);
+      closeEditorDom();
+      updatePill();
+    }
+    editorCommit = commit;
+
+    // Delete via mousedown+preventDefault so the textarea doesn't blur-save first.
+    del.addEventListener('mousedown', function (ev) {
+      ev.preventDefault(); ev.stopPropagation();
+      done = true; closeEditorDom(); removeSpec(spec);
+    });
     input.addEventListener('input', sizeAndPosition);
     input.addEventListener('keydown', function (ev) {
       ev.stopPropagation();
-      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); commitNote(input.value); }
-      else if (ev.key === 'Escape') { ev.preventDefault(); closeNoteInput(); }
+      if ((ev.key === 'Enter' && !ev.shiftKey) || ev.key === 'Escape') { ev.preventDefault(); commit(); }
     });
+    input.addEventListener('blur', function () { setTimeout(commit, 0); });
 
-    rebuildBadges();
-    updatePillForSelection();
     setTimeout(function () { input.focus(); }, 0);
-  }
-
-  function commitNote(val) {
-    val = (val || '').trim();
-    if (noteTargetEl) {
-      if (val) noteMap.set(noteTargetEl, val);
-      else noteMap.delete(noteTargetEl);
-    }
-    closeNoteInput();
-    rebuildBadges();
-  }
-
-  function closeNoteInput() {
-    if (noteInputEl) { noteInputEl.remove(); noteInputEl = null; }
-    noteTargetEl = null;
   }
 
   // ─── Pin (measure) ──────────────────────────────────────────────────────────
@@ -806,7 +801,7 @@ export function getClientScript(options: SpecterOptions): string {
     if (!pinEl) return;
     var r = pinEl.getBoundingClientRect();
     if (!pinHighlight) {
-      pinHighlight = document.createElement('div');
+      pinHighlight = markUI(document.createElement('div'));
       Object.assign(pinHighlight.style, {
         position: 'fixed',
         border: '2px dashed ' + RED,
@@ -836,7 +831,7 @@ export function getClientScript(options: SpecterOptions): string {
   function showMeasureTargetHL(el) {
     clearMeasureTargetHL();
     var r = el.getBoundingClientRect();
-    measureHL = document.createElement('div');
+    measureHL = markUI(document.createElement('div'));
     Object.assign(measureHL.style, {
       position: 'fixed',
       left: r.left + 'px',
@@ -1090,9 +1085,15 @@ export function getClientScript(options: SpecterOptions): string {
     if (!fiActive) return;
     lastMouse.x = e.clientX; lastMouse.y = e.clientY;
     var target = e.target;
-    if (!target || target === pillWrap || pillWrap.contains(target)) return;
-    if (target === tooltip || tooltip.contains(target)) return;
-    if (noteInputEl && (target === noteInputEl || noteInputEl.contains(target))) return;
+    // Never inspect Specter's own UI — and clear the inspect overlays so the
+    // properties box / measure lines don't block a Spec's hover pill.
+    if (!target || isUI(target)) {
+      hideTooltip();
+      clearMeasureOverlay();
+      clearMeasureTargetHL();
+      clearHoverOutline();
+      return;
+    }
 
     lastHovered = target;
 
@@ -1127,8 +1128,9 @@ export function getClientScript(options: SpecterOptions): string {
 
     if (!fiActive) return;
 
-    // Note editor open: let the field handle its own keys (Enter/Esc) and native copy/paste.
-    if (noteInputEl) return;
+    // Spec editor open: let the textarea own its keys (Enter/Esc, native copy,
+    // and the letter "p") — never treat them as Specter shortcuts.
+    if (editorEl) return;
 
     if (e.key === 'Alt' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
       optionHeld = true;
@@ -1138,8 +1140,8 @@ export function getClientScript(options: SpecterOptions): string {
     if ((e.metaKey || e.ctrlKey) && e.key === 'c' && !e.shiftKey && !e.altKey) {
       e.preventDefault();
       var text;
-      if (selectedEls.length > 0) {
-        text = buildMultiSelectCopyText();
+      if (specs.length > 0) {
+        text = buildSpecsCopyText();
       } else if (measureMode && pinEl && lastHovered && lastHovered !== pinEl) {
         text = buildMeasureCopyText(pinEl, lastHovered);
       } else if (measureMode && lastHovered) {
@@ -1153,16 +1155,13 @@ export function getClientScript(options: SpecterOptions): string {
 
     if (isInputFocused()) return;
 
+    // P — the single mark/annotate key (empty note = a plain mark).
+    // preventDefault so the "p" keystroke can't leak into the note box that
+    // markSpec is about to focus (was an intermittent stray-"p" race).
     if (e.key === 'p' || e.key === 'P') {
       if (!lastHovered) return;
-      clearHoverOutline();
-      toggleSelection(lastHovered);
-      return;
-    }
-
-    if (e.key === 'n' || e.key === 'N') {
-      if (!lastHovered) return;
-      openNoteInput(lastHovered);
+      e.preventDefault();
+      markSpec(lastHovered);
       return;
     }
 
@@ -1170,24 +1169,17 @@ export function getClientScript(options: SpecterOptions): string {
       if (!measureMode || !lastHovered) return;
       if (pinEl) {
         clearPin();
-        collapsePill();
+        updatePill();
       } else {
         setPin(lastHovered);
-        expandPill('Pinned · hover another element · Cmd+C copy · Esc clear');
+        expandPill('Pinned · hover another element · P mark · Cmd+C copy');
       }
       return;
     }
 
+    // Esc only HIDES the plugin — Specs persist and return on reactivate.
     if (e.key === 'Escape') {
-      if (pinEl || selectedEls.length > 0) {
-        clearPin();
-        clearSelection();
-        clearMeasureOverlay();
-        hideTooltip();
-        collapsePill();
-      } else {
-        deactivate();
-      }
+      deactivate();
       return;
     }
   }, true);
