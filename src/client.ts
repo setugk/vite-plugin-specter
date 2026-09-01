@@ -437,6 +437,38 @@ export function getClientScript(options: SpecterOptions): string {
     return parts.join(' > ');
   }
 
+  // ─── Layer A locator ──────────────────────────────────────────────────────────
+  // The single most greppable anchor for an element, so Claude jumps straight to the
+  // source instead of searching: a unique test-id → stable id → aria/name → short
+  // visible text → a unique class, falling back to the CSS path. Any stack, no build
+  // step, one line — fewer agent tool-calls + more accurate edits (the core tenet).
+  function uniqueSel(sel) { try { return !!sel && document.querySelectorAll(sel).length === 1; } catch (e) { return false; } }
+  function isHashedId(id) { return /:r[0-9a-z]+:/i.test(id) || /[a-f0-9]{8,}/i.test(id) || /__[a-zA-Z0-9]{5,}/.test(id) || /_[a-zA-Z0-9]{6,}$/.test(id); }
+  function ownText(el) {
+    if (el.children && el.children.length > 2) return '';
+    var t = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+    return (t.length >= 2 && t.length <= 80) ? t : '';
+  }
+  function ownClass(el) {
+    var cls = Array.prototype.slice.call(el.classList || []).filter(function (c) { return c.indexOf('__specter') !== 0 && !/[a-f0-9]{6,}/i.test(c) && !/_[a-zA-Z0-9]{5,}$/.test(c); });
+    for (var i = 0; i < cls.length; i++) { if (uniqueSel('.' + cssEsc(cls[i]))) return cls[i]; }
+    return '';
+  }
+  function resolveLocator(el) {
+    if (!el || el.nodeType !== 1) return '';
+    var i, v;
+    var testAttrs = ['data-testid', 'data-test-id', 'data-test', 'data-cy', 'data-qa'];
+    for (i = 0; i < testAttrs.length; i++) { v = el.getAttribute(testAttrs[i]); if (v) { var ts = '[' + testAttrs[i] + '="' + cssEsc(v) + '"]'; if (uniqueSel(ts)) return ts; } }
+    if (el.id && !isHashedId(el.id) && uniqueSel('#' + cssEsc(el.id))) return '#' + el.id;
+    var attrs = ['aria-label', 'name', 'placeholder', 'alt', 'title'];
+    for (i = 0; i < attrs.length; i++) { v = el.getAttribute(attrs[i]); if (v && v.trim()) { v = v.trim(); if (uniqueSel('[' + attrs[i] + '="' + cssEsc(v) + '"]')) return attrs[i] + ' "' + v.slice(0, 60) + '"'; } }
+    var txt = ownText(el);
+    if (txt) return 'text "' + txt.slice(0, 40) + (txt.length > 40 ? '…' : '') + '"';
+    var cls = ownClass(el);
+    if (cls) return '.' + cls;
+    return getSelector(el); // fallback: the CSS path
+  }
+
   // ─── Structured data model ──────────────────────────────────────────────────
   function buildInfo(el) {
     var cs = getComputedStyle(el);
@@ -522,7 +554,7 @@ export function getClientScript(options: SpecterOptions): string {
       props.push(d);
     }
 
-    return ['[Specter]', head, 'selector: ' + getSelector(data.el), props.join('  ·  ')].join('\\n');
+    return ['[Specter]', head, 'find: ' + resolveLocator(data.el), props.join('  ·  ')].join('\\n');
   }
 
   // Copy every Spec — using each Spec's body snapshotted at mark time, so Specs
@@ -1586,7 +1618,7 @@ export function getClientScript(options: SpecterOptions): string {
   function buildNeighborCopyText(el) {
     var tr = el.getBoundingClientRect();
     var dirs = computeNeighbors(el, tr);
-    var lines = ['[Specter Measure]', '<' + el.tagName.toLowerCase() + '> ' + Math.round(tr.width) + '×' + Math.round(tr.height), 'selector: ' + getSelector(el)];
+    var lines = ['[Specter Measure]', '<' + el.tagName.toLowerCase() + '> ' + Math.round(tr.width) + '×' + Math.round(tr.height), 'find: ' + resolveLocator(el)];
     ['top', 'right', 'bottom', 'left'].forEach(function (k) {
       if (dirs[k]) lines.push(k + ': ' + Math.round(dirs[k].gap) + 'px (to ' + dirs[k].ctx + ')');
     });
@@ -1650,9 +1682,9 @@ export function getClientScript(options: SpecterOptions): string {
 
     var lines = ['[Specter Measure]'];
     lines.push('From: <' + fTag + '>' + (fComp ? ' ' + fComp : '') + ' ' + Math.round(fr.width) + '×' + Math.round(fr.height));
-    lines.push('  selector: ' + getSelector(fromEl));
+    lines.push('  find: ' + resolveLocator(fromEl));
     lines.push('To:   <' + tTag + '>' + (tComp ? ' ' + tComp : '') + ' ' + Math.round(tr.width) + '×' + Math.round(tr.height));
-    lines.push('  selector: ' + getSelector(toEl));
+    lines.push('  find: ' + resolveLocator(toEl));
 
     if (fromContainsTo || toContainsFrom) {
       var outer = fromContainsTo ? fr : tr, inner = fromContainsTo ? tr : fr;
