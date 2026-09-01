@@ -633,8 +633,14 @@ export function getClientScript(options: SpecterOptions): string {
     s.wrap.style.top = by + 'px';
     s.wrap.style.transform = hi ? 'translate(0px,0px)' : ('translate(' + dx + 'px,' + dy + 'px)');
     s.wrap.style.zIndex = hi ? '2147483645' : String(z);
-    s.cap.style.transform = hi ? 'scale(1.6)' : '';
+    // Panel-row hover enlarges the circle (scale 1.5 → 30px). Page hover expands the
+    // capsule to the SAME 30px height (taller, matching that enlarged size) + bigger text.
+    s.cap.style.transform = hi ? 'scale(1.5)' : '';
     s.cap.style.maxWidth = expand ? '320px' : '20px';
+    s.cap.style.height = expand ? '30px' : '20px';
+    s.num.style.fontSize = expand ? '14px' : '12px';
+    s.num.style.width = expand ? '24px' : '16px';
+    s.noteSpan.style.fontSize = expand ? '13px' : '12px';
   }
 
   // The badge whose wrap sits under the cursor right now (topmost). Drives which
@@ -747,7 +753,7 @@ export function getClientScript(options: SpecterOptions): string {
       border: '2px solid #fff', boxSizing: 'border-box',
       borderRadius: '999px', fontFamily: MONO, whiteSpace: 'nowrap',
       boxShadow: '0 2px 6px rgba(0,0,0,0.35)', cursor: 'pointer', userSelect: 'none',
-      transition: 'max-width 0.2s ease, transform 0.15s ease',
+      transition: 'max-width 0.2s ease, height 0.15s ease, transform 0.15s ease',
       transformOrigin: '10px 10px',
     });
     var num = document.createElement('span');
