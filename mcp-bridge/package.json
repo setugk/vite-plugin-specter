@@ -1,0 +1,10 @@
+{
+  "name": "specter-mcp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local bridge that lets Specter batch-send annotations to Claude Code / Kiro over MCP.",
+  "bin": { "specter-bridge": "server.mjs" },
+  "scripts": { "start": "node server.mjs" },
+  "engines": { "node": ">=18" }
+}

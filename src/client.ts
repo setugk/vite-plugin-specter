@@ -2,6 +2,8 @@ import type { SpecterOptions } from './index.js';
 
 export function getClientScript(options: SpecterOptions): string {
   const activateShortcut = options.shortcuts?.activate ?? 'ctrl+alt+z';
+  const cb = options.claudeBridge;
+  const bridgeUrl = cb === true ? 'http://127.0.0.1:8787' : (cb && typeof cb === 'object' ? cb.url ?? 'http://127.0.0.1:8787' : '');
   return `(function() {
   'use strict';
   // Guard against running twice on one page. Use a DOM marker (not just a
@@ -25,6 +27,7 @@ export function getClientScript(options: SpecterOptions): string {
   var LIST = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>';
   var CHEV = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
   var ACTIVATE = ${JSON.stringify(activateShortcut)};
+  var BRIDGE = ${JSON.stringify(bridgeUrl)}; // Claude MCP bridge URL, or '' if disabled
 
   // ─── State ────────────────────────────────────────────────────────────────
   var fiActive = false;
@@ -823,10 +826,10 @@ export function getClientScript(options: SpecterOptions): string {
   // DOM nodes are rebuilt on restore (re-anchored best-effort via the CSS path).
   function saveSpecs() {
     try {
-      if (!specs.length) { localStorage.removeItem(STORAGE_KEY); return; }
-      var data = specs.map(function (s) { return { path: s.path, note: s.note, body: s.body, kind: s.kind }; });
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      if (!specs.length) localStorage.removeItem(STORAGE_KEY);
+      else localStorage.setItem(STORAGE_KEY, JSON.stringify(specs.map(function (s) { return { path: s.path, note: s.note, body: s.body, kind: s.kind }; })));
     } catch (e) {}
+    scheduleSync(); // keep the Claude bridge mirrored to the current Specs
   }
 
   function restoreSpecs() {
@@ -880,12 +883,47 @@ export function getClientScript(options: SpecterOptions): string {
   Object.assign(panelTitle.style, { fontSize: '13px', fontWeight: '700', letterSpacing: '0.02em' });
   var panelSpacer = document.createElement('span');
   panelSpacer.style.flex = '1';
+  var panelClose = document.createElement('span');
+  panelClose.textContent = '×';
+  panelClose.title = 'Close panel (L)';
+  Object.assign(panelClose.style, { cursor: 'pointer', fontSize: '20px', lineHeight: '1', padding: '0 4px', color: '#B9BBC2', flexShrink: '0' });
+  panelClose.addEventListener('click', function (e) { e.stopPropagation(); hidePanel(); });
+  hoverFx(panelClose, { color: '#fff', transform: 'scale(1.2)' }, { color: '#B9BBC2', transform: 'scale(1)' });
+  panelHead.appendChild(panelTitle);
+  panelHead.appendChild(panelSpacer);
+  panelHead.appendChild(panelClose);
+
+  // ── Batch actions toolbar (row under the title) ──
+  var panelTools = document.createElement('div');
+  Object.assign(panelTools.style, {
+    display: 'flex', gap: '8px', alignItems: 'center', flexShrink: '0',
+    padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)',
+  });
+
+  // Status dot: Specs auto-sync to the Claude bridge; this shows the connection
+  // (● synced / ○ offline). Click to force a re-sync. Only shown when a bridge is set.
+  var syncDot = document.createElement('div');
+  Object.assign(syncDot.style, {
+    display: BRIDGE ? 'flex' : 'none', alignItems: 'center', gap: '7px', flex: '1',
+    fontSize: '11px', color: LABEL, cursor: 'pointer', userSelect: 'none',
+  });
+  syncDot.title = 'Specs auto-sync to Claude — click to re-sync now';
+  var dot = document.createElement('span');
+  Object.assign(dot.style, { width: '8px', height: '8px', borderRadius: '999px', background: '#6B7280', flexShrink: '0', transition: 'background 0.2s ease' });
+  var dotLabel = document.createElement('span');
+  dotLabel.textContent = 'Bridge offline';
+  syncDot.appendChild(dot);
+  syncDot.appendChild(dotLabel);
+  syncDot.addEventListener('click', function (e) { e.stopPropagation(); doSync(); });
+
+  // Copy all Specs to the clipboard (ghost when the sync dot is present).
   var copyAllBtn = document.createElement('button');
   copyAllBtn.textContent = 'Copy all';
   Object.assign(copyAllBtn.style, {
-    cursor: 'pointer', fontFamily: MONO, fontSize: '11px', fontWeight: '600',
-    color: '#fff', background: PURPLE, border: 'none', borderRadius: '999px',
-    padding: '6px 12px', flexShrink: '0',
+    cursor: 'pointer', fontFamily: MONO, fontSize: '12px', fontWeight: '600',
+    color: BRIDGE ? '#E0A3F5' : '#fff', background: BRIDGE ? 'transparent' : PURPLE,
+    border: BRIDGE ? '1px solid rgba(224,163,245,0.5)' : 'none', borderRadius: '999px',
+    padding: '8px 14px', flexShrink: '0', marginLeft: BRIDGE ? '0' : 'auto',
   });
   copyAllBtn.addEventListener('click', function (e) {
     e.stopPropagation();
@@ -895,27 +933,53 @@ export function getClientScript(options: SpecterOptions): string {
       setTimeout(function () { copyAllBtn.textContent = 'Copy all'; }, 1200);
     }).catch(function () {});
   });
-  hoverFx(copyAllBtn, { background: '#C13AE0' }, { background: PURPLE });
-  var panelClose = document.createElement('span');
-  panelClose.textContent = '×';
-  panelClose.title = 'Close panel (L)';
-  Object.assign(panelClose.style, { cursor: 'pointer', fontSize: '20px', lineHeight: '1', padding: '0 4px', color: '#B9BBC2', flexShrink: '0' });
-  panelClose.addEventListener('click', function (e) { e.stopPropagation(); hidePanel(); });
-  hoverFx(panelClose, { color: '#fff', transform: 'scale(1.2)' }, { color: '#B9BBC2', transform: 'scale(1)' });
-  panelHead.appendChild(panelTitle);
-  panelHead.appendChild(panelSpacer);
-  panelHead.appendChild(copyAllBtn);
-  panelHead.appendChild(panelClose);
+  hoverFx(copyAllBtn, BRIDGE ? { background: 'rgba(224,163,245,0.14)', color: '#fff' } : { background: '#C13AE0' }, { background: BRIDGE ? 'transparent' : PURPLE, color: BRIDGE ? '#E0A3F5' : '#fff' });
+  if (BRIDGE) panelTools.appendChild(syncDot);
+  panelTools.appendChild(copyAllBtn);
 
   var panelList = document.createElement('div');
   Object.assign(panelList.style, { flex: '1', overflowY: 'auto', overflowX: 'hidden' });
 
   panelWrap.appendChild(panelHead);
+  panelWrap.appendChild(panelTools);
   panelWrap.appendChild(panelList);
   document.body.appendChild(panelWrap);
 
+  // ── Auto-sync: mirror the browser's current Specs to the local bridge ──
+  // Debounced so rapid edits/typing collapse into one POST. The bridge replaces
+  // its snapshot for this URL, so it always reflects what's in the panel — no
+  // button to press; Claude pulls whatever's current when you run /spectify.
+  var syncTimer = null;
+  function setSyncState(s) {
+    if (!BRIDGE) return;
+    if (s === 'syncing') { dot.style.background = '#F59E0B'; dotLabel.textContent = 'Syncing…'; }
+    else if (s === 'synced') { dot.style.background = GREEN; dotLabel.textContent = specs.length ? (specs.length + (specs.length === 1 ? ' Spec synced' : ' Specs synced')) : 'Synced'; }
+    else { dot.style.background = '#6B7280'; dotLabel.textContent = 'Bridge offline'; }
+  }
+  function doSync() {
+    if (!BRIDGE) return;
+    setSyncState('syncing');
+    var payload = {
+      url: location.href,
+      text: buildSpecsCopyText(),
+      specs: specs.map(function (s, i) {
+        return { num: i + 1, note: s.note || '', selector: getSelector(s.el || null) || s.path, kind: s.kind, body: s.body };
+      }),
+    };
+    fetch(BRIDGE + '/specs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      .then(function (r) { if (!r.ok) throw 0; return r.json(); })
+      .then(function () { setSyncState('synced'); })
+      .catch(function () { setSyncState('offline'); });
+  }
+  function scheduleSync() {
+    if (!BRIDGE) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(doSync, 500);
+  }
+
   function renderPanel() {
     panelTitle.textContent = specs.length + (specs.length === 1 ? ' Spec' : ' Specs');
+    panelTools.style.display = (specs.length || BRIDGE) ? 'flex' : 'none';
     copyAllBtn.style.display = specs.length ? 'inline-block' : 'none';
     panelList.textContent = '';
     if (!specs.length) {
@@ -1063,7 +1127,7 @@ export function getClientScript(options: SpecterOptions): string {
     if (focusEditor) setTimeout(focusEditor, 0);
   }
 
-  function showPanel() { panelOpen = true; renderPanel(); panelWrap.style.transform = 'translateX(0)'; }
+  function showPanel() { panelOpen = true; renderPanel(); panelWrap.style.transform = 'translateX(0)'; if (BRIDGE) doSync(); }
   function hidePanel() { panelOpen = false; panelEditSpec = null; panelWrap.style.transform = 'translateX(100%)'; }
   function togglePanel() { if (panelOpen) hidePanel(); else if (fiActive) showPanel(); }
 
@@ -1602,6 +1666,7 @@ export function getClientScript(options: SpecterOptions): string {
   }
 
   restoreSpecs(); // rebuild any Specs saved from a previous load of this URL
+  scheduleSync(); // mirror restored Specs to the Claude bridge on load
 
   console.log('%c👻 Specter — Ctrl+Option+Z to toggle', 'color:#aaa;font-size:11px;');
 })();`;
