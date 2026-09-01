@@ -26,6 +26,8 @@ export function getClientScript(options: SpecterOptions): string {
   var TRASH = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>';
   var LIST = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>';
   var CHEV = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+  var COPY = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+  var CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
   var ACTIVATE = ${JSON.stringify(activateShortcut)};
   var BRIDGE = ${JSON.stringify(bridgeUrl)}; // Claude MCP bridge URL, or '' if disabled
 
@@ -44,6 +46,7 @@ export function getClientScript(options: SpecterOptions): string {
   var copiedTimer = null;
   var flashTimer = null;
   var lastMouse = { x: 0, y: 0 };
+  var lastClick = { label: '', at: 0 }; // last interactive control clicked (likely opener of a modal)
   // Specs = the unified marks (pick + optional annotation). Each:
   //   { el, path, note, body, kind:'element'|'measure', wrap, pill, num, noteSpan }
   var specs = [];
@@ -196,8 +199,8 @@ export function getClientScript(options: SpecterOptions): string {
   hoverFx(listBtn, { background: 'rgba(255,255,255,0.32)' }, { background: 'rgba(255,255,255,0.16)' });
 
   var clearBtn = document.createElement('span');
-  clearBtn.textContent = '✕ Clear';
-  clearBtn.title = 'Remove all Specs';
+  clearBtn.textContent = '✕ Delete all annotations';
+  clearBtn.title = 'Delete all annotations';
   Object.assign(clearBtn.style, {
     display: 'none',
     cursor: 'pointer',
@@ -776,6 +779,34 @@ export function getClientScript(options: SpecterOptions): string {
     return null;
   }
 
+  // If the element sits inside a dialog/modal/drawer/menu, produce a hint for how to
+  // bring it back when it's later hidden — a declarative opener (aria-controls /
+  // data-*target) if the page has one, else the control the user just clicked (the
+  // likely opener), else "reopen the <container>". Empty when there's no such container.
+  function cssEsc(s) { try { return CSS.escape(s); } catch (e) { return s; } }
+  function computeLocateHint(el) {
+    if (!el) return '';
+    var re = /(modal|dialog|drawer|sheet|popover|offcanvas|overlay|lightbox|menu|dropdown|flyout|popup|tooltip)/i;
+    var cur = el, container = null;
+    while (cur && cur !== document.body) {
+      var role = cur.getAttribute ? cur.getAttribute('role') : null;
+      if ((cur.hasAttribute && cur.hasAttribute('aria-modal')) || role === 'dialog' || role === 'menu' ||
+          re.test(cur.className || '') || re.test(cur.id || '')) { container = cur; break; }
+      cur = cur.parentElement;
+    }
+    if (!container) return '';
+    var tag = (container.className || '') + ' ' + (container.id || '');
+    var type = /drawer|offcanvas|sheet/i.test(tag) ? 'drawer' : /menu|dropdown|flyout/i.test(tag) ? 'menu' : 'dialog';
+    var opener = '';
+    if (container.id) {
+      var o = safeQuery('[aria-controls="' + cssEsc(container.id) + '"],[data-target="#' + cssEsc(container.id) + '"],[data-bs-target="#' + cssEsc(container.id) + '"],[data-modal-target="' + cssEsc(container.id) + '"]');
+      if (o) opener = (o.getAttribute('aria-label') || o.textContent || '').replace(/\\s+/g, ' ').trim();
+    }
+    if (!opener && lastClick.label && (Date.now() - lastClick.at) < 120000) opener = lastClick.label;
+    if (opener) return 'Open “' + opener.slice(0, 40) + '” to reveal';
+    return 'Reopen the ' + type + ' to reveal';
+  }
+
   // Press P → create a Spec (+ open its annotation box). Measure mode captures
   // distances instead of properties; a pinned measurement anchors on the pin.
   function markSpec(anchorEl) {
@@ -790,7 +821,7 @@ export function getClientScript(options: SpecterOptions): string {
     }
     clearHoverOutline();
     hideTooltip();
-    var spec = { el: el, path: elementPath(el), note: '', body: body, kind: kind };
+    var spec = { el: el, path: elementPath(el), note: '', body: body, kind: kind, locate: computeLocateHint(el) };
     specs.push(spec);
     createBadge(spec);
     reflowSpecs();
@@ -827,7 +858,7 @@ export function getClientScript(options: SpecterOptions): string {
   function saveSpecs() {
     try {
       if (!specs.length) localStorage.removeItem(STORAGE_KEY);
-      else localStorage.setItem(STORAGE_KEY, JSON.stringify(specs.map(function (s) { return { path: s.path, note: s.note, body: s.body, kind: s.kind }; })));
+      else localStorage.setItem(STORAGE_KEY, JSON.stringify(specs.map(function (s) { return { path: s.path, note: s.note, body: s.body, kind: s.kind, locate: s.locate }; })));
     } catch (e) {}
     scheduleSync(); // keep the Claude bridge mirrored to the current Specs
   }
@@ -837,7 +868,7 @@ export function getClientScript(options: SpecterOptions): string {
     try { data = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch (e) { return; }
     if (!Array.isArray(data) || !data.length) return;
     data.forEach(function (d) {
-      var spec = { el: safeQuery(d.path), path: d.path, note: d.note || '', body: d.body || '', kind: d.kind || 'element' };
+      var spec = { el: safeQuery(d.path), path: d.path, note: d.note || '', body: d.body || '', kind: d.kind || 'element', locate: d.locate || '' };
       specs.push(spec);
       createBadge(spec);
     });
@@ -916,32 +947,118 @@ export function getClientScript(options: SpecterOptions): string {
   syncDot.appendChild(dotLabel);
   syncDot.addEventListener('click', function (e) { e.stopPropagation(); doSync(); });
 
-  // Copy all Specs to the clipboard (ghost when the sync dot is present).
-  var copyAllBtn = document.createElement('button');
-  copyAllBtn.textContent = 'Copy all';
-  Object.assign(copyAllBtn.style, {
-    cursor: 'pointer', fontFamily: MONO, fontSize: '12px', fontWeight: '600',
-    color: BRIDGE ? '#E0A3F5' : '#fff', background: BRIDGE ? 'transparent' : PURPLE,
-    border: BRIDGE ? '1px solid rgba(224,163,245,0.5)' : 'none', borderRadius: '999px',
-    padding: '8px 14px', flexShrink: '0', marginLeft: BRIDGE ? '0' : 'auto',
-  });
-  copyAllBtn.addEventListener('click', function (e) {
+  // Icon-only round button with a native tooltip (title). No label reveal — the
+  // hover-expanding text read as janky, so we let the browser tooltip do it.
+  function iconPill(svg, title, idleColor, accentRGB) {
+    var btn = document.createElement('button');
+    btn.title = title;
+    Object.assign(btn.style, {
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+      color: idleColor, background: 'transparent', border: '1px solid rgba(' + accentRGB + ',0.5)',
+      borderRadius: '999px', width: '32px', height: '32px', padding: '0', flexShrink: '0',
+      transition: 'background 0.12s ease, color 0.12s ease',
+    });
+    var ic = document.createElement('span'); ic.innerHTML = svg;
+    Object.assign(ic.style, { display: 'flex', alignItems: 'center' });
+    btn.appendChild(ic);
+    btn.addEventListener('mouseenter', function () { btn.style.background = 'rgba(' + accentRGB + ',0.16)'; btn.style.color = '#fff'; });
+    btn.addEventListener('mouseleave', function () { btn.style.background = 'transparent'; btn.style.color = idleColor; });
+    return { btn: btn, icon: ic };
+  }
+
+  // Copy all → clipboard. Icon flashes to a check on success.
+  var copyAll = iconPill(COPY, 'Copy all', '#E0A3F5', '224,163,245');
+  copyAll.btn.addEventListener('click', function (e) {
     e.stopPropagation();
     if (!specs.length) return;
     navigator.clipboard.writeText(buildSpecsCopyText()).then(function () {
-      copyAllBtn.textContent = 'Copied ✓';
-      setTimeout(function () { copyAllBtn.textContent = 'Copy all'; }, 1200);
+      copyAll.icon.innerHTML = CHECK; copyAll.btn.style.color = GREEN;
+      setTimeout(function () { copyAll.icon.innerHTML = COPY; copyAll.btn.style.color = copyAll.btn.matches(':hover') ? '#fff' : '#E0A3F5'; }, 1200);
     }).catch(function () {});
   });
-  hoverFx(copyAllBtn, BRIDGE ? { background: 'rgba(224,163,245,0.14)', color: '#fff' } : { background: '#C13AE0' }, { background: BRIDGE ? 'transparent' : PURPLE, color: BRIDGE ? '#E0A3F5' : '#fff' });
+
+  // Delete all → confirm popover → removeAllSpecs.
+  var delAll = iconPill(TRASH, 'Delete all annotations', '#ED8FA6', '237,62,97');
+  delAll.btn.addEventListener('click', function (e) { e.stopPropagation(); confirmDeleteAll(delAll.btn); });
+
+  var copyAllBtn = copyAll.btn; // renderPanel toggles these by spec count
+  var deleteAllBtn = delAll.btn;
   if (BRIDGE) panelTools.appendChild(syncDot);
+  else { var sp = document.createElement('span'); sp.style.flex = '1'; panelTools.appendChild(sp); }
   panelTools.appendChild(copyAllBtn);
+  panelTools.appendChild(deleteAllBtn);
+
+  // ── "Delete all?" confirmation popover (Specter's own UI) ──
+  var confirmPop = null;
+  function closeConfirm() {
+    if (confirmPop) { confirmPop.remove(); confirmPop = null; document.removeEventListener('mousedown', onConfirmOutside, true); }
+  }
+  function onConfirmOutside(e) { if (confirmPop && !confirmPop.contains(e.target)) closeConfirm(); }
+  function confirmDeleteAll(anchor) {
+    closeConfirm();
+    if (!specs.length) return;
+    var pop = markUI(document.createElement('div'));
+    Object.assign(pop.style, {
+      position: 'fixed', zIndex: '2147483647', boxSizing: 'border-box', width: '230px',
+      background: TIP_BG, border: '1px solid ' + PURPLE, borderRadius: '8px', padding: '14px',
+      boxShadow: '0 6px 20px rgba(0,0,0,0.45)', fontFamily: MONO,
+    });
+    var msg = document.createElement('div');
+    msg.textContent = 'Delete all ' + specs.length + (specs.length === 1 ? ' annotation?' : ' annotations?');
+    Object.assign(msg.style, { fontSize: '12px', lineHeight: '17px', color: '#fff', marginBottom: '12px' });
+    var btnRow = document.createElement('div');
+    Object.assign(btnRow.style, { display: 'flex', gap: '8px', justifyContent: 'flex-end' });
+    var cancel = document.createElement('button');
+    cancel.textContent = 'Cancel';
+    Object.assign(cancel.style, { cursor: 'pointer', fontFamily: MONO, fontSize: '11px', fontWeight: '600', color: '#B9BBC2', background: 'transparent', border: 'none', borderRadius: '999px', padding: '6px 10px' });
+    cancel.addEventListener('click', function (e) { e.stopPropagation(); closeConfirm(); });
+    hoverFx(cancel, { color: '#fff' }, { color: '#B9BBC2' });
+    var confirm = document.createElement('button');
+    confirm.textContent = 'Delete all';
+    Object.assign(confirm.style, { cursor: 'pointer', fontFamily: MONO, fontSize: '11px', fontWeight: '700', color: '#fff', background: RED, border: 'none', borderRadius: '999px', padding: '6px 12px' });
+    confirm.addEventListener('click', function (e) { e.stopPropagation(); closeConfirm(); removeAllSpecs(); });
+    hoverFx(confirm, { background: '#C42D4E' }, { background: RED });
+    btnRow.appendChild(cancel); btnRow.appendChild(confirm);
+    pop.appendChild(msg); pop.appendChild(btnRow);
+    document.body.appendChild(pop);
+    // Anchor below the delete-all button, right-aligned, clamped to viewport.
+    var r = anchor.getBoundingClientRect();
+    var w = pop.offsetWidth, h = pop.offsetHeight, m = 8;
+    var left = Math.min(Math.max(r.right - w, m), window.innerWidth - w - m);
+    var top = Math.min(r.bottom + 6, window.innerHeight - h - m);
+    pop.style.left = left + 'px'; pop.style.top = top + 'px';
+    confirmPop = pop;
+    setTimeout(function () { document.addEventListener('mousedown', onConfirmOutside, true); }, 0);
+  }
+
+  // Guidance line — tells the user what to actually DO with their annotations.
+  var panelHint = document.createElement('div');
+  Object.assign(panelHint.style, {
+    display: 'none', fontSize: '11px', lineHeight: '17px', color: LABEL,
+    padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.08)',
+  });
+  function setHint() {
+    panelHint.textContent = '';
+    if (!specs.length) { panelHint.style.display = 'none'; return; }
+    panelHint.style.display = 'block';
+    var code = function (t) { var s = document.createElement('span'); s.textContent = t; Object.assign(s.style, { color: '#E0A3F5', fontWeight: '700' }); return s; };
+    if (BRIDGE) {
+      panelHint.appendChild(document.createTextNode('Switch to Claude Code and run '));
+      panelHint.appendChild(code('/spectify'));
+      panelHint.appendChild(document.createTextNode(' — it applies these annotations to your code. You can also edit or delete each one above.'));
+    } else {
+      panelHint.appendChild(document.createTextNode('Press '));
+      panelHint.appendChild(code('Cmd+C'));
+      panelHint.appendChild(document.createTextNode(' (or Copy all) and paste into Claude to apply these annotations. You can also edit or delete each one above.'));
+    }
+  }
 
   var panelList = document.createElement('div');
   Object.assign(panelList.style, { flex: '1', overflowY: 'auto', overflowX: 'hidden' });
 
   panelWrap.appendChild(panelHead);
   panelWrap.appendChild(panelTools);
+  panelWrap.appendChild(panelHint);
   panelWrap.appendChild(panelList);
   document.body.appendChild(panelWrap);
 
@@ -980,7 +1097,9 @@ export function getClientScript(options: SpecterOptions): string {
   function renderPanel() {
     panelTitle.textContent = specs.length + (specs.length === 1 ? ' Spec' : ' Specs');
     panelTools.style.display = (specs.length || BRIDGE) ? 'flex' : 'none';
-    copyAllBtn.style.display = specs.length ? 'inline-block' : 'none';
+    copyAllBtn.style.display = specs.length ? 'inline-flex' : 'none';
+    deleteAllBtn.style.display = specs.length ? 'inline-flex' : 'none';
+    setHint();
     panelList.textContent = '';
     if (!specs.length) {
       var empty = document.createElement('div');
@@ -995,25 +1114,25 @@ export function getClientScript(options: SpecterOptions): string {
       var editing = (panelEditSpec === spec);
       var row = document.createElement('div');
       Object.assign(row.style, {
-        display: 'flex', alignItems: 'flex-start', gap: '12px', boxSizing: 'border-box',
+        position: 'relative', display: 'flex', alignItems: 'flex-start', gap: '12px', boxSizing: 'border-box',
         padding: '12px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)',
-        opacity: visible ? '1' : '0.5', transition: 'background 0.12s ease',
+        opacity: '1', transition: 'background 0.12s ease',
       });
       var badge = document.createElement('span');
       badge.textContent = String(i + 1);
       Object.assign(badge.style, {
         flexShrink: '0', width: '20px', height: '20px', borderRadius: '999px',
-        background: PURPLE, color: '#fff', fontSize: '12px', fontWeight: '700',
+        background: PURPLE, color: '#fff', fontSize: '11px', fontWeight: '700',
         border: '2px solid #fff', boxSizing: 'border-box',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       });
       var content = document.createElement('div');
-      Object.assign(content.style, { flex: '1', minWidth: '0', display: 'flex', flexDirection: 'column', gap: '6px' });
+      Object.assign(content.style, { flex: '1', minWidth: '0', display: 'flex', flexDirection: 'column', gap: '6px', paddingRight: '30px' });
 
       var selName = (spec.el && spec.el.tagName) ? getSelector(spec.el) : (spec.path.split('>').pop() || '').trim();
       var meta = document.createElement('div');
       Object.assign(meta.style, { fontSize: '11px', color: LABEL, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
-      meta.textContent = visible ? selName : (selName + ' · not visible');
+      meta.textContent = selName;
 
       if (editing) {
         // ── UPDATE: inline editor ──
@@ -1022,10 +1141,15 @@ export function getClientScript(options: SpecterOptions): string {
         ta.placeholder = 'Describe the change…';
         Object.assign(ta.style, {
           width: '100%', boxSizing: 'border-box', background: 'rgba(255,255,255,0.06)',
-          border: '1px solid ' + PURPLE, borderRadius: '6px', color: '#fff', fontFamily: MONO,
-          fontSize: '12px', lineHeight: '17px', padding: '8px', resize: 'none', outline: 'none',
-          overflow: 'hidden', minHeight: '52px',
+          border: '1px solid ' + PURPLE, borderRadius: '6px', fontFamily: MONO,
+          fontSize: '14px', lineHeight: '20px', padding: '8px', resize: 'none', outline: 'none',
+          overflow: 'hidden', minHeight: '56px',
         });
+        // Form controls are the one thing arbitrary pages style hard — force white with
+        // !important (and -webkit-text-fill-color, which otherwise wins over the color).
+        ta.style.setProperty('color', '#fff', 'important');
+        ta.style.setProperty('-webkit-text-fill-color', '#fff', 'important');
+        ta.style.setProperty('caret-color', '#fff', 'important');
         var grow = function () { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
         ta.addEventListener('input', grow);
         var saveEdit = function () { spec.note = ta.value.trim(); updateBadgeContent(spec); panelEditSpec = null; saveSpecs(); updatePill(); };
@@ -1064,14 +1188,17 @@ export function getClientScript(options: SpecterOptions): string {
         // the clamp is applied in the post-render measure pass below (only when the
         // note actually overflows two lines — otherwise no chevron is shown).
         Object.assign(note.style, {
-          fontSize: '12px', lineHeight: '16px', color: spec.note ? '#fff' : LABEL,
+          fontSize: '14px', lineHeight: '20px', color: spec.note ? '#fff' : LABEL,
           overflow: 'hidden', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap',
           cursor: spec.note ? 'pointer' : 'default',
         });
         note.textContent = spec.note || (spec.kind === 'measure' ? '⬡ measurement' : '— no note —');
 
+        // Floated into the top-right corner so they don't reserve note width. On hover
+        // they get a background that fades in from the left, masking the note text behind
+        // them (instead of overlapping it). paddingLeft is the fade gutter.
         var actions = document.createElement('div');
-        Object.assign(actions.style, { display: 'flex', gap: '2px', flexShrink: '0' });
+        Object.assign(actions.style, { position: 'absolute', top: '10px', right: '14px', display: 'flex', gap: '2px', alignItems: 'center', paddingLeft: '22px', borderRadius: '6px' });
         var mkIcon = function (svg, title, color, onClick, onHover) {
           var b = document.createElement('span');
           b.innerHTML = svg; b.title = title;
@@ -1086,12 +1213,32 @@ export function getClientScript(options: SpecterOptions): string {
         chev.firstChild.style.transform = expanded ? 'rotate(180deg)' : 'rotate(0deg)';
         var editBtn = mkIcon(PENCIL, 'Edit note', '#B9BBC2', function () { panelEditSpec = spec; spec._expanded = true; renderPanel(); });
         var delBtn = mkIcon(TRASH, 'Delete Spec', '#ED8FA6', function () { removeSpec(spec); }, { background: 'rgba(237,62,97,0.30)', color: '#fff' });
-        actions.appendChild(chev);
+        // Edit + delete reveal only on row hover; the expand chevron stays rightmost
+        // and fixed (edit/delete appear to its left, so it never shifts).
+        editBtn.style.display = delBtn.style.display = 'none';
         actions.appendChild(editBtn);
         actions.appendChild(delBtn);
+        actions.appendChild(chev);
 
         content.appendChild(note);
         content.appendChild(meta);
+
+        // Hidden element (e.g. inside a closed modal): flag it and say how to reveal it,
+        // so hidden Specs are findable in a long list instead of silently unreachable.
+        if (!visible) {
+          var hbar = document.createElement('div');
+          Object.assign(hbar.style, { display: 'flex', alignItems: 'center', gap: '7px', marginTop: '2px', flexWrap: 'wrap' });
+          var tag = document.createElement('span');
+          tag.textContent = 'HIDDEN';
+          Object.assign(tag.style, { fontSize: '9px', fontWeight: '700', letterSpacing: '0.05em', color: '#3A2A05', background: '#F59E0B', borderRadius: '4px', padding: '2px 6px', flexShrink: '0' });
+          var hint = document.createElement('span');
+          hint.textContent = spec.locate || 'Not on the page right now';
+          Object.assign(hint.style, { fontSize: '11px', color: '#C9CBD2', overflow: 'hidden', textOverflow: 'ellipsis' });
+          hbar.appendChild(tag);
+          hbar.appendChild(hint);
+          content.appendChild(hbar);
+        }
+
         row.appendChild(badge);
         row.appendChild(content);
         row.appendChild(actions);
@@ -1099,10 +1246,14 @@ export function getClientScript(options: SpecterOptions): string {
         note.addEventListener('click', function (e) { if (spec.note) { e.stopPropagation(); spec._expanded = !spec._expanded; renderPanel(); } });
         row.addEventListener('mouseenter', function () {
           row.style.background = 'rgba(255,255,255,0.05)';
+          editBtn.style.display = delBtn.style.display = 'flex';
+          actions.style.background = 'linear-gradient(to right, rgba(52,54,60,0) 0, rgba(52,54,60,1) 22px)';
           if (visible) { highlightSpec = spec; revealSpec(spec); }
         });
         row.addEventListener('mouseleave', function () {
           row.style.background = 'transparent';
+          editBtn.style.display = delBtn.style.display = 'none';
+          actions.style.background = 'transparent';
           if (highlightSpec === spec) highlightSpec = null;
         });
 
@@ -1115,7 +1266,7 @@ export function getClientScript(options: SpecterOptions): string {
     // Measure pass — now that rows are laid out, clamp collapsed notes that overflow
     // 2 lines and hide the expand chevron on notes that fit.
     measures.forEach(function (m) {
-      if (m.note.scrollHeight > 34) { // > two 16px lines (+2 slack)
+      if (m.note.scrollHeight > 42) { // > two 20px lines (+2 slack)
         m.note.style.display = '-webkit-box';
         m.note.style.whiteSpace = 'normal';
         m.note.style.setProperty('-webkit-box-orient', 'vertical');
@@ -1655,6 +1806,19 @@ export function getClientScript(options: SpecterOptions): string {
   }, true);
 
   document.addEventListener('mousemove', onMouseMove, { passive: true });
+
+  // Remember the last interactive control the user clicked (not Specter's own UI).
+  // If they open a modal then annotate inside it, this is the opener — used to tell
+  // them how to reveal a Spec whose element is later hidden.
+  document.addEventListener('click', function (e) {
+    try {
+      if (isUI(e.target)) return;
+      var b = e.target.closest && e.target.closest('button, a, [role="button"], summary, [type="button"], [type="submit"]');
+      if (!b) return;
+      var t = (b.getAttribute('aria-label') || b.textContent || '').replace(/\\s+/g, ' ').trim();
+      if (t) lastClick = { label: t.slice(0, 40), at: Date.now() };
+    } catch (err) {}
+  }, true);
 
   window.__specterToggle = function() { if (fiActive) deactivate(); else activate(); };
 
