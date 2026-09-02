@@ -678,12 +678,6 @@ export function getClientScript(options: SpecterOptions): string {
     }).join('\\n\\n---\\n\\n');
   }
 
-  function linesToHTML(str) {
-    return str.split('\\n').map(function (l) {
-      return '<div style="margin-bottom:4px;color:#fff">' + esc(l) + '</div>';
-    }).join('');
-  }
-
   // ─── Hover outline ──────────────────────────────────────────────────────────
   function setHoverOutline(el) {
     if (outlinedEl === el) return;
@@ -717,11 +711,12 @@ export function getClientScript(options: SpecterOptions): string {
   function reRenderTooltip() {
     if (commentMode) { hideTooltip(); return; }
     if (measureMode) {
-      var text = (pinEl && pinEl !== lastHovered) ? measureBetween(pinEl, lastHovered) : measureToNeighbor(lastHovered);
-      tooltip.innerHTML = linesToHTML(text);
-    } else {
-      tooltip.innerHTML = buildHumanDisplay(buildInfo(lastHovered));
+      // Redraw the overlay on scroll/resize; readout box stays hidden (see hover handler).
+      if (pinEl && pinEl !== lastHovered) measureBetween(pinEl, lastHovered); else measureToNeighbor(lastHovered);
+      hideTooltip();
+      return;
     }
+    tooltip.innerHTML = buildHumanDisplay(buildInfo(lastHovered));
     positionTooltip(lastMouse.x, lastMouse.y);
   }
 
@@ -1924,9 +1919,11 @@ export function getClientScript(options: SpecterOptions): string {
     if (measureMode) {
       clearHoverOutline();
       showMeasureTargetHL(target);
-      var text = (pinEl && pinEl !== target) ? measureBetween(pinEl, target) : measureToNeighbor(target);
-      tooltip.innerHTML = linesToHTML(text);
-      positionTooltip(e.clientX, e.clientY);
+      // Draw the on-screen measurement overlay (the px badges + lines) but keep
+      // the dark readout box hidden — it occludes the very measurements it reports.
+      // The full readout still copies with Cmd+C. (Properties mode keeps its box.)
+      if (pinEl && pinEl !== target) measureBetween(pinEl, target); else measureToNeighbor(target);
+      hideTooltip();
       if (pinEl) updatePinHL();
     } else {
       clearMeasureOverlay();
