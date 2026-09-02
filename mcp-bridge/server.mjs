@@ -38,8 +38,12 @@ const httpServer = http.createServer((req, res) => {
   // Plain-HTTP read of the staged Specs (peek). Lets any tool — curl, /spectify,
   // a Kiro extension — read the batch without speaking MCP. ?clear=1 consumes.
   if (req.method === 'GET' && (req.url === '/pending' || req.url.startsWith('/pending?'))) {
+    // Lean payload for /spectify: each spec's `body` already carries the note-less
+    // properties + the greppable `find:` anchor, so drop the batch-level `text`
+    // (a full duplicate of every body) to avoid shipping the same data twice.
+    const batches = all().map((b) => ({ url: b.url, receivedAt: b.receivedAt, specs: b.specs }));
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, batches: all() }));
+    res.end(JSON.stringify({ ok: true, batches }));
     if (req.url.indexOf('clear=1') >= 0) { log(`GET ${req.url} → returned + cleared`); snapshots = {}; }
     return;
   }
@@ -95,7 +99,7 @@ function renderPending() {
   if (!batches.length) return 'No Specter annotations are synced. In the browser: activate Specter (Ctrl+Option+Z) and drop some Specs — they auto-sync here. Then run /spectify.';
   return batches.map((b) => {
     const head = `# Specter — ${b.specs.length} Spec(s)${b.url && b.url !== 'default' ? ' from ' + b.url : ''}`;
-    return head + '\n\n' + (b.text || b.specs.map((s, i) => `#${s.num ?? i + 1} ${s.note || '(no note)'} — ${s.selector || ''}`).join('\n'));
+    return head + '\n\n' + (b.text || b.specs.map((s, i) => `#${s.num ?? i + 1} ${s.note || '(no note)'}\n${s.body || ''}`).join('\n\n'));
   }).join('\n\n' + '─'.repeat(40) + '\n\n');
 }
 

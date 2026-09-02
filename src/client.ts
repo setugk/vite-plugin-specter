@@ -454,6 +454,51 @@ export function getClientScript(options: SpecterOptions): string {
     for (var i = 0; i < cls.length; i++) { if (uniqueSel('.' + cssEsc(cls[i]))) return cls[i]; }
     return '';
   }
+  // A 'text "…"' anchor is only safe if that text isn't ALSO the own-text of a
+  // DIFFERENT element (an ancestor/descendant sharing it = the same source spot,
+  // so those don't count). Prevents an ambiguous grep (e.g. a button and a modal
+  // heading both reading "Book a demo").
+  function uniqueTextAnchor(el, txt) {
+    var all = document.getElementsByTagName('*');
+    for (var i = 0; i < all.length; i++) {
+      var o = all[i];
+      if (o === el || el.contains(o) || o.contains(el)) continue;
+      if (ownText(o) === txt) return false;
+    }
+    return true;
+  }
+  // Which of {color, background} are altered by a :hover/:active/:focus rule that
+  // matches this element — so a value read WHILE the cursor is on it (its computed
+  // style is the hovered state) can be flagged instead of reported as the resting
+  // value. Detect-only: recovering the resting value would need a cascade parser.
+  var STATE_PSEUDO = /:(hover|active|focus|focus-visible|focus-within)\\b/g;
+  function hoverAffected(el) {
+    var out = {};
+    var sheets = document.styleSheets;
+    for (var i = 0; i < sheets.length; i++) {
+      var rules;
+      try { rules = sheets[i].cssRules; } catch (e) { continue; } // cross-origin sheet
+      if (!rules) continue;
+      for (var j = 0; j < rules.length; j++) {
+        var r = rules[j];
+        if (!r.selectorText || r.selectorText.indexOf(':') < 0) continue;
+        STATE_PSEUDO.lastIndex = 0;
+        if (!STATE_PSEUDO.test(r.selectorText)) continue;
+        var sels = r.selectorText.split(',');
+        for (var k = 0; k < sels.length; k++) {
+          STATE_PSEUDO.lastIndex = 0;
+          var base = sels[k].replace(STATE_PSEUDO, '').trim();
+          if (!base) continue;
+          var m = false;
+          try { m = el.matches(base); } catch (e) { continue; }
+          if (!m) continue;
+          if (r.style.color) out.color = true;
+          if (r.style.background || r.style.backgroundColor) out.bg = true;
+        }
+      }
+    }
+    return out;
+  }
   function resolveLocator(el) {
     if (!el || el.nodeType !== 1) return '';
     var i, v;
@@ -463,7 +508,7 @@ export function getClientScript(options: SpecterOptions): string {
     var attrs = ['aria-label', 'name', 'placeholder', 'alt', 'title'];
     for (i = 0; i < attrs.length; i++) { v = el.getAttribute(attrs[i]); if (v && v.trim()) { v = v.trim(); if (uniqueSel('[' + attrs[i] + '="' + cssEsc(v) + '"]')) return attrs[i] + ' "' + v.slice(0, 60) + '"'; } }
     var txt = ownText(el);
-    if (txt) return 'text "' + txt.slice(0, 40) + (txt.length > 40 ? '…' : '') + '"';
+    if (txt && uniqueTextAnchor(el, txt)) return 'text "' + txt.slice(0, 40) + (txt.length > 40 ? '…' : '') + '"';
     var cls = ownClass(el);
     if (cls) return '.' + cls;
     return getSelector(el); // fallback: the CSS path
@@ -473,6 +518,7 @@ export function getClientScript(options: SpecterOptions): string {
   function buildInfo(el) {
     var cs = getComputedStyle(el);
     var rect = el.getBoundingClientRect();
+    var hv = hoverAffected(el);
     var ff = cs.fontFamily.split(',')[0].replace(/['"]/g, '').trim();
     var raw = el.textContent ? el.textContent.replace(/\\s+/g, ' ').trim() : '';
     return {
@@ -489,6 +535,8 @@ export function getClientScript(options: SpecterOptions): string {
       font: { family: ff, weight: cs.fontWeight, size: cs.fontSize, lineHeight: cs.lineHeight },
       color: colorObj(cs.color),
       bg: colorObj(cs.backgroundColor),
+      colorHover: !!hv.color,
+      bgHover: !!hv.bg,
       padding: edge(cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft),
       margin: edge(cs.marginTop, cs.marginRight, cs.marginBottom, cs.marginLeft),
       radius: (cs.borderRadius && cs.borderRadius !== '0px') ? cs.borderRadius : null,
@@ -514,8 +562,8 @@ export function getClientScript(options: SpecterOptions): string {
     if (data.text) h += '<div style="color:' + LABEL + ';font-style:italic;margin-bottom:8px">"' + esc(data.text) + (data.textTrunc ? '…' : '') + '"</div>';
     h += '<div style="height:8px"></div>';
     h += row('Font', esc(data.font.family) + ' · ' + weightName(data.font.weight) + ' · ' + data.font.size + '/' + data.font.lineHeight);
-    if (data.color) h += row('Color', swatch(data.color.hex) + data.color.label);
-    if (data.bg) h += row('Bg', swatch(data.bg.hex) + data.bg.label);
+    if (data.color) h += row('Color', swatch(data.color.hex) + data.color.label + (data.colorHover ? ' <span style="color:' + LABEL + '">(hover)</span>' : ''));
+    if (data.bg) h += row('Bg', swatch(data.bg.hex) + data.bg.label + (data.bgHover ? ' <span style="color:' + LABEL + '">(hover)</span>' : ''));
     if (data.padding) h += row('Padding', data.padding.value);
     if (data.margin) h += row('Margin', data.margin.value);
     if (data.radius) h += row('Radius', data.radius);
@@ -542,8 +590,8 @@ export function getClientScript(options: SpecterOptions): string {
 
     // One compact line of the values that could be the target of the change.
     var props = ['font: ' + data.font.family + ' ' + data.font.weight + ' ' + data.font.size + '/' + data.font.lineHeight];
-    if (data.color) props.push('color: ' + data.color.label);
-    if (data.bg) props.push('bg: ' + data.bg.label);
+    if (data.color) props.push('color: ' + data.color.label + (data.colorHover ? ' (hover)' : ''));
+    if (data.bg) props.push('bg: ' + data.bg.label + (data.bgHover ? ' (hover)' : ''));
     if (data.padding) props.push('padding: ' + data.padding.value);
     if (data.margin) props.push('margin: ' + data.margin.value);
     if (data.radius) props.push('radius: ' + data.radius);
@@ -566,7 +614,7 @@ export function getClientScript(options: SpecterOptions): string {
       var header = n > 1 ? '[' + tag + ' ' + (i + 1) + '/' + n + ']' : '[' + tag + ']';
       if (spec.note) header += '\\n✏️ CHANGE: ' + spec.note;
       return spec.body.replace(/^\\[Specter[^\\]]*\\]/, function () { return header; });
-    }).join('\\n\\n' + Array(41).join('─') + '\\n\\n');
+    }).join('\\n\\n---\\n\\n');
   }
 
   function linesToHTML(str) {
@@ -1118,7 +1166,7 @@ export function getClientScript(options: SpecterOptions): string {
       url: location.href,
       text: buildSpecsCopyText(),
       specs: specs.map(function (s, i) {
-        return { num: i + 1, note: s.note || '', selector: getSelector(s.el || null) || s.path, kind: s.kind, body: s.body };
+        return { num: i + 1, note: s.note || '', kind: s.kind, body: s.body };
       }),
     };
     fetch(BRIDGE + '/specs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
