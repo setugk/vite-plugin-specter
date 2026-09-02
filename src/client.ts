@@ -34,6 +34,7 @@ export function getClientScript(options: SpecterOptions): string {
   // ─── State ────────────────────────────────────────────────────────────────
   var fiActive = false;
   var measureMode = false;
+  var commentMode = false; // C: hide props/measure overlays for design review — Specs still capture them
   var pinEl = null;
   var pinHighlight = null;
   var lastHovered = null;
@@ -199,7 +200,7 @@ export function getClientScript(options: SpecterOptions): string {
   hoverFx(listBtn, { background: 'rgba(255,255,255,0.32)' }, { background: 'rgba(255,255,255,0.16)' });
 
   var clearBtn = document.createElement('span');
-  clearBtn.textContent = '✕ Delete all annotations';
+  clearBtn.textContent = '✕ Delete all';
   clearBtn.title = 'Delete all annotations';
   Object.assign(clearBtn.style, {
     display: 'none',
@@ -231,13 +232,42 @@ export function getClientScript(options: SpecterOptions): string {
   chevron.addEventListener('click', function (e) { e.stopPropagation(); moveSide(); });
   hoverFx(chevron, { opacity: '1', transform: 'scale(1.2)' }, { opacity: '0.8', transform: 'scale(1)' });
 
+  // Sync status in the control bar (only when a bridge is configured): spinner while
+  // syncing, green when synced, red on error — so you always know what's staged.
+  var pillSync = document.createElement('span');
+  Object.assign(pillSync.style, {
+    display: 'none', width: '8px', height: '8px', borderRadius: '999px',
+    background: '#6B7280', flexShrink: '0', boxSizing: 'border-box',
+  });
+  pillSync.title = 'Sync status — click to re-sync';
+  pillSync.addEventListener('click', function (e) { e.stopPropagation(); if (BRIDGE) doSync(); });
+
   pill.appendChild(iconBtn);
+  pill.appendChild(pillSync);
   pill.appendChild(pillText);
   pill.appendChild(listBtn);
   pill.appendChild(clearBtn);
   pill.appendChild(chevron);
   pillWrap.appendChild(pill);
   document.body.appendChild(pillWrap);
+
+  // Keyframes for the sync spinner (injected once).
+  var spinStyle = document.createElement('style');
+  spinStyle.textContent = '@keyframes __specterSpin{to{transform:rotate(360deg)}}';
+  markUI(spinStyle);
+  document.head.appendChild(spinStyle);
+
+  function setPillSync(state) {
+    if (!BRIDGE) { pillSync.style.display = 'none'; return; }
+    pillSync.style.display = 'inline-block';
+    if (state === 'syncing') {
+      Object.assign(pillSync.style, { width: '10px', height: '10px', background: 'transparent', border: '2px solid rgba(255,255,255,0.35)', borderTopColor: '#fff', animation: '__specterSpin 0.6s linear infinite' });
+    } else if (state === 'synced') {
+      Object.assign(pillSync.style, { width: '8px', height: '8px', background: GREEN, border: 'none', animation: 'none' });
+    } else { // offline / error
+      Object.assign(pillSync.style, { width: '8px', height: '8px', background: '#F26D6D', border: 'none', animation: 'none' });
+    }
+  }
 
   pillWrap.addEventListener('mouseenter', function () {
     clearMeasureOverlay();
@@ -268,6 +298,12 @@ export function getClientScript(options: SpecterOptions): string {
     }
   }
 
+  // The mode is shown at all times (persistent prefix), so you always know whether
+  // hovering shows properties, measurements, or nothing (Comment).
+  function modeLabel() {
+    return commentMode ? 'Comment' : (measureMode ? 'Measure' : 'Properties');
+  }
+
   function expandPill(text) {
     pill.style.maxWidth = '820px';
     pillText.style.display = 'inline';
@@ -275,19 +311,17 @@ export function getClientScript(options: SpecterOptions): string {
     listBtn.style.display = specs.length > 0 ? 'inline-flex' : 'none';
     clearBtn.style.display = specs.length > 0 ? 'inline' : 'none';
     pillExpanded = true;
-    if (text) { pillText.textContent = text; return; }
-    if (specs.length > 0) {
-      pillText.textContent = specs.length + (specs.length === 1 ? ' Spec' : ' Specs') + ' · P add · L panel · Cmd+C copy';
-    } else if (measureMode) {
-      pillText.textContent = 'Measure · hover distances · P mark · M pin · Cmd+C copy · Option toggle';
-    } else {
-      pillText.textContent = 'Properties · P mark / annotate · Cmd+C copy · Option measure';
-    }
+    // Just the mode (+ the action buttons when Specs exist). Shortcuts live in the
+    // side panel now, so the pill stays short.
+    pillText.textContent = text || modeLabel();
   }
 
+  // "Collapsed" = the compact resting state: mode label only, no hints/buttons.
+  // Still shows the mode so it's visible at all times.
   function collapsePill() {
-    pill.style.maxWidth = '32px';
-    pillText.style.display = 'none';
+    pillText.textContent = modeLabel();
+    pillText.style.display = 'inline';
+    pill.style.maxWidth = '220px';
     chevron.style.display = 'none';
     listBtn.style.display = 'none';
     clearBtn.style.display = 'none';
@@ -296,7 +330,7 @@ export function getClientScript(options: SpecterOptions): string {
 
   function flashMode() {
     if (pillExpanded && pillWrap.matches(':hover')) return;
-    var text = measureMode ? '⬡ Measure mode' : '◉ Properties mode';
+    var text = commentMode ? 'Comment mode' : (measureMode ? 'Measure mode' : 'Properties mode');
     expandPill(text);
     clearTimeout(flashTimer);
     flashTimer = setTimeout(function () {
@@ -317,11 +351,13 @@ export function getClientScript(options: SpecterOptions): string {
   function activate() {
     fiActive = true;
     measureMode = false;
+    commentMode = false;
     pillWrap.style.display = 'block';
     document.body.style.cursor = 'crosshair';
     updatePill();
     startLoop();
     reflowSpecs();
+    if (BRIDGE) doSync(); // resolve the control-bar sync dot (green if reachable, red if not)
   }
 
   function deactivate() {
@@ -605,15 +641,34 @@ export function getClientScript(options: SpecterOptions): string {
     return ['[Specter]', head, 'find: ' + resolveLocator(data.el), props.join('  ·  ')].join('\\n');
   }
 
+  // Group Specs on the SAME element so their identical properties aren't emitted
+  // twice — several comments on one thing share ONE property block, each with its
+  // own change note. Measure Specs always stand alone (each is a distinct reading).
+  function groupSpecs() {
+    var groups = [];
+    for (var i = 0; i < specs.length; i++) {
+      var s = specs[i], g = null;
+      if (s.kind === 'element' && s.el) {
+        for (var j = 0; j < groups.length; j++) { if (groups[j].kind === 'element' && groups[j].el === s.el) { g = groups[j]; break; } }
+      }
+      if (g) g.specs.push(s);
+      else groups.push({ kind: s.kind, el: s.el, specs: [s] });
+    }
+    return groups;
+  }
+
   // Copy every Spec — using each Spec's body snapshotted at mark time, so Specs
   // whose element is currently hidden (e.g. inside a closed modal) still copy.
+  // Same-element Specs collapse into one block (properties once, notes stacked).
   function buildSpecsCopyText() {
-    var n = specs.length;
-    return specs.map(function (spec, i) {
-      var tag = spec.kind === 'measure' ? 'Specter Measure' : 'Specter';
+    var groups = groupSpecs();
+    var n = groups.length;
+    return groups.map(function (g, i) {
+      var tag = g.kind === 'measure' ? 'Specter Measure' : 'Specter';
       var header = n > 1 ? '[' + tag + ' ' + (i + 1) + '/' + n + ']' : '[' + tag + ']';
-      if (spec.note) header += '\\n✏️ CHANGE: ' + spec.note;
-      return spec.body.replace(/^\\[Specter[^\\]]*\\]/, function () { return header; });
+      var notes = g.specs.filter(function (s) { return s.note; }).map(function (s) { return '✏️ CHANGE: ' + s.note; });
+      if (notes.length) header += '\\n' + notes.join('\\n');
+      return g.specs[0].body.replace(/^\\[Specter[^\\]]*\\]/, function () { return header; });
     }).join('\\n\\n---\\n\\n');
   }
 
@@ -654,6 +709,7 @@ export function getClientScript(options: SpecterOptions): string {
   }
 
   function reRenderTooltip() {
+    if (commentMode) { hideTooltip(); return; }
     if (measureMode) {
       var text = (pinEl && pinEl !== lastHovered) ? measureBetween(pinEl, lastHovered) : measureToNeighbor(lastHovered);
       tooltip.innerHTML = linesToHTML(text);
@@ -815,7 +871,7 @@ export function getClientScript(options: SpecterOptions): string {
 
   function updateBadgeContent(spec) {
     spec.num.textContent = String(specs.indexOf(spec) + 1);
-    if (spec.note) spec.noteSpan.textContent = '✏️ ' + spec.note;
+    if (spec.note) spec.noteSpan.textContent = spec.note;
     else spec.noteSpan.textContent = spec.kind === 'measure' ? '⬡ measure' : '';
   }
 
@@ -860,10 +916,6 @@ export function getClientScript(options: SpecterOptions): string {
     updateBadgeContent(spec);
   }
 
-  function findElementSpec(el) {
-    for (var i = 0; i < specs.length; i++) if (specs[i].kind === 'element' && specs[i].el === el) return specs[i];
-    return null;
-  }
 
   // If the element sits inside a dialog/modal/drawer/menu, produce a hint for how to
   // bring it back when it's later hidden — a declarative opener (aria-controls /
@@ -902,7 +954,9 @@ export function getClientScript(options: SpecterOptions): string {
       if (pinEl && lastHovered && lastHovered !== pinEl) { el = pinEl; body = buildMeasureCopyText(pinEl, lastHovered); }
       else { el = anchorEl; body = buildNeighborCopyText(anchorEl); }
     } else {
-      if (findElementSpec(anchorEl)) return; // P over an already-Spec'd element → nothing
+      // Multiple Specs per element are allowed in every mode — clustering fans the badges
+      // out and same-element output collapses to one property block. Mode only changes
+      // what's shown on screen, never whether you can add an annotation.
       body = buildLLMClipboard(buildInfo(anchorEl));
     }
     clearHoverOutline();
@@ -1140,13 +1194,73 @@ export function getClientScript(options: SpecterOptions): string {
   }
 
   var panelList = document.createElement('div');
-  Object.assign(panelList.style, { flex: '1', overflowY: 'auto', overflowX: 'hidden' });
+  // overscroll-behavior:contain stops the panel's scroll from chaining into the page.
+  Object.assign(panelList.style, { flex: '1', overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain' });
+
+  // Keyboard shortcuts reference — collapsible, collapsed by default, lives here (not
+  // in the pill) so the pill stays short.
+  var panelKeys = document.createElement('div');
+  Object.assign(panelKeys.style, {
+    flexShrink: '0', fontSize: '11px', lineHeight: '18px', color: LABEL,
+    borderTop: '1px solid rgba(255,255,255,0.08)',
+  });
+  (function () {
+    var rows = [
+      ['P', 'mark / comment the hovered element'],
+      ['C', 'toggle Comment mode (hide properties)'],
+      ['\\u2325 Option', 'toggle Measure mode'],
+      ['M', 'pin an element to measure from'],
+      ['Cmd/Ctrl+C', 'copy all Specs'],
+      ['L', 'toggle this panel'],
+    ];
+    var head = document.createElement('div');
+    Object.assign(head.style, { display: 'flex', alignItems: 'center', gap: '6px', color: '#8A8D96', fontWeight: '700', letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: '10px', padding: '10px 16px', cursor: 'pointer', userSelect: 'none' });
+    var caret = document.createElement('span');
+    caret.textContent = '\\u203A'; // ›
+    Object.assign(caret.style, { display: 'inline-block', transition: 'transform 0.15s ease', transform: 'rotate(0deg)' });
+    var headText = document.createElement('span');
+    headText.textContent = 'Keyboard shortcuts';
+    head.appendChild(caret);
+    head.appendChild(headText);
+    var body = document.createElement('div');
+    Object.assign(body.style, { display: 'none', padding: '0 16px 12px' }); // collapsed by default
+    rows.forEach(function (r) {
+      var row = document.createElement('div');
+      Object.assign(row.style, { display: 'flex', gap: '8px', marginBottom: '2px' });
+      var k = document.createElement('span');
+      k.textContent = r[0];
+      Object.assign(k.style, { color: '#E0A3F5', fontWeight: '700', minWidth: '78px', flexShrink: '0' });
+      var d = document.createElement('span');
+      d.textContent = r[1];
+      row.appendChild(k); row.appendChild(d);
+      body.appendChild(row);
+    });
+    var open = false;
+    head.addEventListener('click', function (e) {
+      e.stopPropagation();
+      open = !open;
+      body.style.display = open ? 'block' : 'none';
+      caret.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
+    });
+    panelKeys.appendChild(head);
+    panelKeys.appendChild(body);
+  })();
 
   panelWrap.appendChild(panelHead);
   panelWrap.appendChild(panelTools);
   panelWrap.appendChild(panelHint);
   panelWrap.appendChild(panelList);
+  panelWrap.appendChild(panelKeys);
   document.body.appendChild(panelWrap);
+
+  // Panel scroll and page scroll are mutually exclusive: wheel over the scrollable list
+  // scrolls it natively (overscroll-behavior:contain stops it chaining at the bounds);
+  // wheel over any non-scrolling part of the panel never scrolls the page behind it.
+  panelWrap.addEventListener('wheel', function (e) {
+    var canScroll = panelList.scrollHeight > panelList.clientHeight;
+    if (panelList.contains(e.target) && canScroll) return; // let the list scroll natively
+    e.preventDefault();
+  }, { passive: false });
 
   // ── Auto-sync: mirror the browser's current Specs to the local bridge ──
   // Debounced so rapid edits/typing collapse into one POST. The bridge replaces
@@ -1155,24 +1269,32 @@ export function getClientScript(options: SpecterOptions): string {
   var syncTimer = null;
   function setSyncState(s) {
     if (!BRIDGE) return;
+    setPillSync(s); // mirror the state into the control bar
     if (s === 'syncing') { dot.style.background = '#F59E0B'; dotLabel.textContent = 'Syncing…'; }
     else if (s === 'synced') { dot.style.background = GREEN; dotLabel.textContent = specs.length ? (specs.length + (specs.length === 1 ? ' Spec synced' : ' Specs synced')) : 'Synced'; }
-    else { dot.style.background = '#6B7280'; dotLabel.textContent = 'Bridge offline'; }
+    else { dot.style.background = '#F26D6D'; dotLabel.textContent = 'Bridge offline'; }
   }
   function doSync() {
     if (!BRIDGE) return;
     setSyncState('syncing');
+    // Keep the spinner up for at least 1s even on an instant localhost sync, so the
+    // feedback is actually perceptible instead of flashing by.
+    var started = Date.now();
+    var settle = function (state) {
+      var wait = Math.max(0, 1000 - (Date.now() - started));
+      setTimeout(function () { setSyncState(state); }, wait);
+    };
     var payload = {
       url: location.href,
       text: buildSpecsCopyText(),
-      specs: specs.map(function (s, i) {
-        return { num: i + 1, note: s.note || '', kind: s.kind, body: s.body };
+      specs: groupSpecs().map(function (g, i) {
+        return { num: i + 1, note: g.specs.map(function (s) { return s.note; }).filter(Boolean).join('\\n'), kind: g.kind, body: g.specs[0].body };
       }),
     };
     fetch(BRIDGE + '/specs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       .then(function (r) { if (!r.ok) throw 0; return r.json(); })
-      .then(function () { setSyncState('synced'); })
-      .catch(function () { setSyncState('offline'); });
+      .then(function () { settle('synced'); })
+      .catch(function () { settle('offline'); });
   }
   function scheduleSync() {
     if (!BRIDGE) return;
@@ -1782,6 +1904,16 @@ export function getClientScript(options: SpecterOptions): string {
 
     lastHovered = target;
 
+    // Comment mode: outline only (so you know what you're commenting on), no
+    // properties/measure overlay on screen. The Spec still captures everything.
+    if (commentMode) {
+      clearMeasureOverlay();
+      clearMeasureTargetHL();
+      setHoverOutline(target);
+      hideTooltip();
+      return;
+    }
+
     if (measureMode) {
       clearHoverOutline();
       showMeasureTargetHL(target);
@@ -1866,6 +1998,21 @@ export function getClientScript(options: SpecterOptions): string {
     if (e.key === 'l' || e.key === 'L') {
       e.preventDefault();
       togglePanel();
+      return;
+    }
+
+    // C — toggle Comment mode (outline only; props/measure hidden but still captured).
+    // Plain c only — Cmd/Ctrl+C copy was handled above and returned.
+    if ((e.key === 'c' || e.key === 'C') && !e.metaKey && !e.ctrlKey) {
+      e.preventDefault();
+      commentMode = !commentMode;
+      if (commentMode && measureMode) { measureMode = false; clearPin(); }
+      clearMeasureOverlay();
+      clearMeasureTargetHL();
+      clearHoverOutline();
+      hideTooltip();
+      if (lastHovered && commentMode) setHoverOutline(lastHovered);
+      flashMode();
       return;
     }
 
