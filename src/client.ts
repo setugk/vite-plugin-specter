@@ -257,16 +257,22 @@ export function getClientScript(options: SpecterOptions): string {
   markUI(spinStyle);
   document.head.appendChild(spinStyle);
 
+  // Shared dot styling for the control-bar AND side-panel sync indicators, so they
+  // always match: spinner while syncing, green when synced, red on error.
+  function applyDotState(el, state) {
+    el.style.boxSizing = 'border-box';
+    if (state === 'syncing') {
+      Object.assign(el.style, { width: '10px', height: '10px', background: 'transparent', border: '2px solid rgba(255,255,255,0.35)', borderTopColor: '#fff', animation: '__specterSpin 0.6s linear infinite' });
+    } else if (state === 'synced') {
+      Object.assign(el.style, { width: '8px', height: '8px', background: GREEN, border: 'none', animation: 'none' });
+    } else { // offline / error
+      Object.assign(el.style, { width: '8px', height: '8px', background: '#F26D6D', border: 'none', animation: 'none' });
+    }
+  }
   function setPillSync(state) {
     if (!BRIDGE) { pillSync.style.display = 'none'; return; }
     pillSync.style.display = 'inline-block';
-    if (state === 'syncing') {
-      Object.assign(pillSync.style, { width: '10px', height: '10px', background: 'transparent', border: '2px solid rgba(255,255,255,0.35)', borderTopColor: '#fff', animation: '__specterSpin 0.6s linear infinite' });
-    } else if (state === 'synced') {
-      Object.assign(pillSync.style, { width: '8px', height: '8px', background: GREEN, border: 'none', animation: 'none' });
-    } else { // offline / error
-      Object.assign(pillSync.style, { width: '8px', height: '8px', background: '#F26D6D', border: 'none', animation: 'none' });
-    }
+    applyDotState(pillSync, state);
   }
 
   pillWrap.addEventListener('mouseenter', function () {
@@ -1214,10 +1220,10 @@ export function getClientScript(options: SpecterOptions): string {
       ['L', 'toggle this panel'],
     ];
     var head = document.createElement('div');
-    Object.assign(head.style, { display: 'flex', alignItems: 'center', gap: '6px', color: '#8A8D96', fontWeight: '700', letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: '10px', padding: '10px 16px', cursor: 'pointer', userSelect: 'none' });
+    Object.assign(head.style, { display: 'flex', alignItems: 'center', gap: '6px', color: '#8A8D96', fontWeight: '700', letterSpacing: '0.04em', textTransform: 'uppercase', fontSize: '11px', padding: '10px 16px', cursor: 'pointer', userSelect: 'none' });
     var caret = document.createElement('span');
     caret.textContent = '\\u203A'; // ›
-    Object.assign(caret.style, { display: 'inline-block', transition: 'transform 0.15s ease', transform: 'rotate(0deg)' });
+    Object.assign(caret.style, { display: 'inline-block', fontSize: '16px', lineHeight: '1', transition: 'transform 0.15s ease', transform: 'rotate(0deg)' });
     var headText = document.createElement('span');
     headText.textContent = 'Keyboard shortcuts';
     head.appendChild(caret);
@@ -1269,10 +1275,11 @@ export function getClientScript(options: SpecterOptions): string {
   var syncTimer = null;
   function setSyncState(s) {
     if (!BRIDGE) return;
-    setPillSync(s); // mirror the state into the control bar
-    if (s === 'syncing') { dot.style.background = '#F59E0B'; dotLabel.textContent = 'Syncing…'; }
-    else if (s === 'synced') { dot.style.background = GREEN; dotLabel.textContent = specs.length ? (specs.length + (specs.length === 1 ? ' Spec synced' : ' Specs synced')) : 'Synced'; }
-    else { dot.style.background = '#F26D6D'; dotLabel.textContent = 'Bridge offline'; }
+    setPillSync(s);     // control-bar dot
+    applyDotState(dot, s); // side-panel dot — same spinner/green/red
+    if (s === 'syncing') { dotLabel.textContent = 'Syncing…'; }
+    else if (s === 'synced') { dotLabel.textContent = specs.length ? (specs.length + (specs.length === 1 ? ' Spec synced' : ' Specs synced')) : 'Synced'; }
+    else { dotLabel.textContent = 'Bridge offline'; }
   }
   function doSync() {
     if (!BRIDGE) return;
@@ -1438,7 +1445,7 @@ export function getClientScript(options: SpecterOptions): string {
           Object.assign(hbar.style, { display: 'flex', alignItems: 'center', gap: '7px', marginTop: '2px', flexWrap: 'wrap' });
           var tag = document.createElement('span');
           tag.textContent = 'HIDDEN';
-          Object.assign(tag.style, { fontSize: '9px', fontWeight: '700', letterSpacing: '0.05em', color: '#3A2A05', background: '#F59E0B', borderRadius: '4px', padding: '2px 6px', flexShrink: '0' });
+          Object.assign(tag.style, { fontSize: '11px', fontWeight: '700', letterSpacing: '0.05em', color: '#3A2A05', background: '#F59E0B', borderRadius: '4px', padding: '2px 6px', flexShrink: '0' });
           var hint = document.createElement('span');
           hint.textContent = spec.locate || 'Not on the page right now';
           Object.assign(hint.style, { fontSize: '11px', color: '#C9CBD2', overflow: 'hidden', textOverflow: 'ellipsis' });
@@ -1702,9 +1709,9 @@ export function getClientScript(options: SpecterOptions): string {
         position: 'absolute',
         background: RED,
         color: '#fff',
-        fontSize: '10px',
+        fontSize: '12px',
         fontFamily: MONO,
-        padding: '1px 4px',
+        padding: '2px 5px',
         borderRadius: '3px',
         pointerEvents: 'none',
         whiteSpace: 'nowrap',
