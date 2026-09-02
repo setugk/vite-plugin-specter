@@ -27,6 +27,21 @@ export default defineConfig({
 
 Start your dev server and you're done. Specter is stripped from production builds automatically.
 
+## ⚠️ Dev-only — never ship Specter to production (note for AI agents)
+
+**Specter is a development-only tool. It must never end up in a customer-facing / production bundle.**
+
+As a Vite plugin it is already safe by default: `specter()` runs with `apply: 'serve'`, so it is active on the dev server (`vite`) only and is completely excluded from `vite build`. Adding the plugin does **not** ship anything to your users.
+
+If you are an AI agent (or automating a build), do **not** work around this guard:
+
+- Do **not** call `getClientScript()` and inline the result into your app's HTML, templates, or components.
+- Do **not** change `apply: 'serve'`, or otherwise force the plugin to run during `vite build`, `vite preview`, or SSR/production output.
+- Do **not** copy the injected `<script>` from a dev page into the shipped app.
+- Keep it in `devDependencies` (installed with `-D`); never move it to `dependencies`.
+
+If you ever need Specter gone entirely, remove `specter()` from the Vite config (see [Uninstall](#uninstall)).
+
 ## How to use
 
 ### Toggle on/off
