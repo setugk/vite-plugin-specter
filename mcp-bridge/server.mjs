@@ -38,13 +38,24 @@ const httpServer = http.createServer((req, res) => {
   // Plain-HTTP read of the staged Specs (peek). Lets any tool — curl, /spectify,
   // a Kiro extension — read the batch without speaking MCP. ?clear=1 consumes.
   if (req.method === 'GET' && (req.url === '/pending' || req.url.startsWith('/pending?'))) {
+    // Optional ?url=<substring> filter so ONE bridge can serve many projects:
+    // /spectify passes the project's origin/port and only pulls that project's Specs.
+    // Empty/missing = no filter (backward compatible).
+    const q = req.url.indexOf('?') >= 0 ? new URLSearchParams(req.url.slice(req.url.indexOf('?') + 1)) : null;
+    const filter = (q && q.get('url')) || '';
+    const match = (b) => !filter || (b.url || '').indexOf(filter) >= 0;
     // Lean payload for /spectify: each spec's `body` already carries the note-less
     // properties + the greppable `find:` anchor, so drop the batch-level `text`
     // (a full duplicate of every body) to avoid shipping the same data twice.
-    const batches = all().map((b) => ({ url: b.url, receivedAt: b.receivedAt, specs: b.specs }));
+    const batches = all().filter(match).map((b) => ({ url: b.url, receivedAt: b.receivedAt, specs: b.specs }));
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, batches }));
-    if (req.url.indexOf('clear=1') >= 0) { log(`GET ${req.url} → returned + cleared`); snapshots = {}; }
+    // ?clear=1 consumes only what was returned — a filtered clear leaves other projects intact.
+    if (req.url.indexOf('clear=1') >= 0) {
+      if (filter) { all().filter(match).forEach((b) => { delete snapshots[b.url]; }); }
+      else snapshots = {};
+      log(`GET ${req.url} → returned + cleared${filter ? ' (filtered: ' + filter + ')' : ''}`);
+    }
     return;
   }
   if (req.method === 'POST' && req.url === '/specs') {

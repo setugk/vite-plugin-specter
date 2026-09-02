@@ -20,6 +20,7 @@ export function getClientScript(options: SpecterOptions): string {
   var TIP_BG = '#292B32';
   var GREEN = '#22C55E';
   var LABEL = '#8B8D94';
+  var BADGE_IDLE = '#6B6D75'; // panel row-number badges sit greyscale; the hovered row's badge colors to PURPLE
   var MONO = "'JetBrains Mono', 'SF Mono', 'Fira Code', monospace";
   var ZAP = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>';
   var PENCIL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path><path d="m15 5 4 4"></path></svg>';
@@ -1332,9 +1333,10 @@ export function getClientScript(options: SpecterOptions): string {
       badge.textContent = String(i + 1);
       Object.assign(badge.style, {
         flexShrink: '0', width: '20px', height: '20px', borderRadius: '999px',
-        background: PURPLE, color: '#fff', fontSize: '11px', fontWeight: '700',
-        border: '2px solid #fff', boxSizing: 'border-box',
+        background: BADGE_IDLE, color: '#fff', fontSize: '11px', fontWeight: '700',
+        border: '1px solid #fff', boxSizing: 'border-box',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
+        transition: 'background 0.12s ease',
       });
       var content = document.createElement('div');
       Object.assign(content.style, { flex: '1', minWidth: '0', display: 'flex', flexDirection: 'column', gap: '6px', paddingRight: '30px' });
@@ -1456,12 +1458,14 @@ export function getClientScript(options: SpecterOptions): string {
         note.addEventListener('click', function (e) { if (spec.note) { e.stopPropagation(); spec._expanded = !spec._expanded; renderPanel(); } });
         row.addEventListener('mouseenter', function () {
           row.style.background = 'rgba(255,255,255,0.05)';
+          badge.style.background = PURPLE;
           editBtn.style.display = delBtn.style.display = 'flex';
           actions.style.background = 'linear-gradient(to right, rgba(52,54,60,0) 0, rgba(52,54,60,1) 22px)';
           if (visible) { highlightSpec = spec; revealSpec(spec); }
         });
         row.addEventListener('mouseleave', function () {
           row.style.background = 'transparent';
+          badge.style.background = BADGE_IDLE;
           editBtn.style.display = delBtn.style.display = 'none';
           actions.style.background = 'transparent';
           if (highlightSpec === spec) highlightSpec = null;
