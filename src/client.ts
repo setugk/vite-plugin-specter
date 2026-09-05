@@ -29,6 +29,8 @@ export function getClientScript(options: SpecterOptions): string {
   var CHEV = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
   var COPY = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
   var CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+  var SHARE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" y1="2" x2="12" y2="15"></line></svg>';
+  var IMPORT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"></path><polyline points="8 12 12 16 16 12"></polyline><path d="M4 21h16"></path></svg>';
   var ACTIVATE = ${JSON.stringify(activateShortcut)};
   var BRIDGE = ${JSON.stringify(bridgeUrl)}; // Claude MCP bridge URL, or '' if disabled
 
@@ -315,7 +317,7 @@ export function getClientScript(options: SpecterOptions): string {
     pill.style.maxWidth = '820px';
     pillText.style.display = 'inline';
     chevron.style.display = 'inline';
-    listBtn.style.display = specs.length > 0 ? 'inline-flex' : 'none';
+    listBtn.style.display = 'inline-flex'; // always reachable — the panel is also where you Import a shared file
     clearBtn.style.display = specs.length > 0 ? 'inline' : 'none';
     pillExpanded = true;
     // Just the mode (+ the action buttons when Specs exist). Shortcuts live in the
@@ -800,18 +802,29 @@ export function getClientScript(options: SpecterOptions): string {
     var mx = lastMouse.x, my = lastMouse.y;
     var hoverBadge = fiActive ? badgeUnderCursor(mx, my) : null;
 
-    // Pass 1 — resolve visibility + base anchor for each spec.
+    // Pass 1 — resolve visibility + base anchor for each spec. _liveVis tracks the
+    // panel's HIDDEN semantics (isVisible after re-anchor recovery, IGNORING occlusion —
+    // off-screen is fine, that's what the hover-scroll is for) so the panel can stay in
+    // sync with what's actually on the page instead of showing a stale HIDDEN.
     var vis = [];
     for (var i = 0; i < specs.length; i++) {
       var s = specs[i];
-      if (!fiActive) { s.wrap.style.display = 'none'; continue; }
-      if (s.missing) { s.wrap.style.display = 'none'; continue; } // shared comment whose target is gone/changed
+      if (!fiActive) { s.wrap.style.display = 'none'; s._liveVis = false; continue; }
+      if (s.missing) { s.wrap.style.display = 'none'; s._liveVis = false; continue; } // shared comment whose target is gone/changed
       if (!s.el || !s.el.isConnected) { var f = safeQuery(s.path); if (f) s.el = f; }
-      if (!isVisible(s.el)) { s.wrap.style.display = 'none'; continue; }
+      if (!isVisible(s.el)) { s.wrap.style.display = 'none'; s._liveVis = false; continue; }
+      s._liveVis = true;
       var r = s.el.getBoundingClientRect();
-      if (isOccluded(s.el, r)) { s.wrap.style.display = 'none'; continue; } // covered (e.g. behind a modal)
+      if (isOccluded(s.el, r)) { s.wrap.style.display = 'none'; continue; } // covered / off-screen: no badge, but panel not HIDDEN
       s._bx = r.left - 10; s._by = r.top - 10; // -4 circle offset, -6 wrap padding
       vis.push(s);
+    }
+
+    // Keep the open panel's HIDDEN labels live: if any spec's on-page visibility
+    // flipped since the panel last rendered, re-render it (debounced).
+    if (panelOpen) {
+      var g = liveVisSig();
+      if (g !== panelVisSig) { panelVisSig = g; clearTimeout(panelVisTimer); panelVisTimer = setTimeout(function () { if (panelOpen) renderPanel(); }, 150); }
     }
 
     // Pass 2 — cluster badges whose anchors coincide (within ~16px).
@@ -1273,6 +1286,11 @@ export function getClientScript(options: SpecterOptions): string {
     return isVisible(spec.el);
   }
 
+  // Signature of on-page visibility across specs (from reflowSpecs' per-frame _liveVis),
+  // used to detect when the panel's HIDDEN labels have gone stale and re-render.
+  var panelVisSig = '', panelVisTimer = null;
+  function liveVisSig() { var s = ''; for (var i = 0; i < specs.length; i++) s += specs[i]._liveVis ? '1' : '0'; return s; }
+
   // ─── Specs side panel (in-session review) ────────────────────────────────────
   var panelWrap = markUI(document.createElement('div'));
   Object.assign(panelWrap.style, {
@@ -1360,10 +1378,40 @@ export function getClientScript(options: SpecterOptions): string {
   var delAll = iconPill(TRASH, 'Delete all annotations', '#ED8FA6', '237,62,97');
   delAll.btn.addEventListener('click', function (e) { e.stopPropagation(); confirmDeleteAll(delAll.btn); });
 
+  // Share comments (human↔human): copies a link, or downloads a file when it can't
+  // fit / the page owns the hash. The hint line confirms which happened.
+  var share = iconPill(SHARE, 'Share comments to another person', '#8AB4F8', '138,180,248');
+  function resetShareIcon() { share.icon.innerHTML = SHARE; share.btn.style.color = share.btn.matches(':hover') ? '#fff' : '#8AB4F8'; }
+  share.btn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (!specs.length) return;
+    shareComments().then(function (res) {
+      if (res.kind === 'link') {
+        navigator.clipboard.writeText(res.link).then(function () {
+          share.icon.innerHTML = CHECK; share.btn.style.color = GREEN;
+          flashHint('✓ Link copied — paste it to your reviewer. They see your comments on the same page.', GREEN);
+          setTimeout(resetShareIcon, 1400);
+        }).catch(function () { flashHint('Copy failed — check clipboard permission for this site.', '#ED8FA6'); });
+      } else if (res.kind === 'file') {
+        share.icon.innerHTML = CHECK; share.btn.style.color = GREEN;
+        flashHint('✓ Saved comments.specter.json — send that file (too many comments to fit a link).', GREEN);
+        setTimeout(resetShareIcon, 1400);
+      }
+    });
+  });
+
+  // Import a comments file someone sent (the file-fallback receiver).
+  var importTool = iconPill(IMPORT, 'Import a comments file', '#8AB4F8', '138,180,248');
+  importTool.btn.addEventListener('click', function (e) { e.stopPropagation(); importCommentsFile(); });
+
   var copyAllBtn = copyAll.btn; // renderPanel toggles these by spec count
   var deleteAllBtn = delAll.btn;
+  var shareBtn = share.btn;
+  var importToolBtn = importTool.btn;
   if (BRIDGE) panelTools.appendChild(syncDot);
   else { var sp = document.createElement('span'); sp.style.flex = '1'; panelTools.appendChild(sp); }
+  panelTools.appendChild(shareBtn);
+  panelTools.appendChild(importToolBtn);
   panelTools.appendChild(copyAllBtn);
   panelTools.appendChild(deleteAllBtn);
 
@@ -1430,6 +1478,16 @@ export function getClientScript(options: SpecterOptions): string {
       panelHint.appendChild(code('Cmd+C'));
       panelHint.appendChild(document.createTextNode(' (or Copy all) and paste into Claude to apply these annotations. You can also edit or delete each one above.'));
     }
+  }
+  // Briefly show a confirmation in the hint line (Share copied / file saved), then
+  // restore the normal guidance.
+  var hintFlashTimer = null;
+  function flashHint(msg, color) {
+    panelHint.style.display = 'block';
+    panelHint.textContent = msg;
+    panelHint.style.color = color || GREEN;
+    if (hintFlashTimer) clearTimeout(hintFlashTimer);
+    hintFlashTimer = setTimeout(function () { panelHint.style.color = LABEL; setHint(); }, 2800);
   }
 
   var panelList = document.createElement('div');
@@ -1544,14 +1602,16 @@ export function getClientScript(options: SpecterOptions): string {
 
   function renderPanel() {
     panelTitle.textContent = specs.length + (specs.length === 1 ? ' Spec' : ' Specs');
-    panelTools.style.display = (specs.length || BRIDGE) ? 'flex' : 'none';
+    panelTools.style.display = 'flex'; // always visible when the panel is open (Import needs no Specs)
+    shareBtn.style.display = specs.length ? 'inline-flex' : 'none';
     copyAllBtn.style.display = specs.length ? 'inline-flex' : 'none';
     deleteAllBtn.style.display = specs.length ? 'inline-flex' : 'none';
+    importToolBtn.style.display = 'inline-flex'; // receiving a shared file needs no existing Specs
     setHint();
     panelList.textContent = '';
     if (!specs.length) {
       var empty = document.createElement('div');
-      empty.textContent = 'No Specs yet — hover an element and press P.';
+      empty.textContent = 'No comments yet — hover an element and press P, or use the Import button above to open a comments file someone shared.';
       Object.assign(empty.style, { padding: '24px 16px', fontSize: '12px', lineHeight: '18px', color: LABEL });
       panelList.appendChild(empty);
       return;
@@ -1744,6 +1804,7 @@ export function getClientScript(options: SpecterOptions): string {
       }
     });
     if (focusEditor) setTimeout(focusEditor, 0);
+    panelVisSig = liveVisSig(); // record what this render reflects, so reflow only re-renders on a real flip
   }
 
   function showPanel() { panelOpen = true; renderPanel(); panelWrap.style.transform = 'translateX(0)'; if (BRIDGE) doSync(); }
