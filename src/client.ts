@@ -1147,44 +1147,111 @@ export function getClientScript(options: SpecterOptions): string {
     return added;
   }
 
-  // ── Transport: share link (#spx= fragment) ──────────────────────────────────
+  // ── Transport: share link (#spx=) with a file fallback ──────────────────────
   // The link is destination AND payload — pasted into Slack it looks like a normal
   // URL; clicked, it lands the recipient on the exact page, so the URL gate is
-  // satisfied automatically. base64url of the JSON (UTF-8 safe, no padding); the
-  // split/join dodges regex escaping inside this template-literal client. Compression
-  // + the too-big → file fallback are Step 5.
-  function b64urlEncode(str) {
-    var bytes = new TextEncoder().encode(str), bin = '';
+  // satisfied automatically. Payload = <fmt><base64url>: fmt 'z' = gzip (Compression
+  // Stream, zero-dep), 'j' = plain UTF-8 when gzip is unavailable. split/join dodges
+  // regex escaping inside this template-literal client.
+  var LINK_MAX = 8000; // ~URL ceiling; beyond this we offer a .specter.json file
+
+  function bytesToB64url(bytes) {
+    var bin = '';
     for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
     var b = btoa(bin).split('+').join('-').split('/').join('_');
     while (b.charAt(b.length - 1) === '=') b = b.slice(0, -1);
     return b;
   }
-  function b64urlDecode(s) {
+  function b64urlToBytes(s) {
     s = s.split('-').join('+').split('_').join('/');
     while (s.length % 4) s += '=';
     var bin = atob(s), bytes = new Uint8Array(bin.length);
     for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new TextDecoder().decode(bytes);
+    return bytes;
+  }
+  function gzipStr(str) {
+    var s = new Blob([str]).stream().pipeThrough(new CompressionStream('gzip'));
+    return new Response(s).arrayBuffer().then(function (buf) { return new Uint8Array(buf); });
+  }
+  function gunzipBytes(bytes) {
+    var s = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return new Response(s).text();
+  }
+  function encodePayload(str) {
+    if (typeof CompressionStream !== 'undefined') {
+      return gzipStr(str).then(function (gz) { return 'z' + bytesToB64url(gz); })
+        .catch(function () { return 'j' + bytesToB64url(new TextEncoder().encode(str)); });
+    }
+    return Promise.resolve('j' + bytesToB64url(new TextEncoder().encode(str)));
+  }
+  function decodePayload(s) {
+    var fmt = s.charAt(0);
+    if (fmt === 'z') return gunzipBytes(b64urlToBytes(s.slice(1)));
+    if (fmt === 'j') return Promise.resolve(new TextDecoder().decode(b64urlToBytes(s.slice(1))));
+    // legacy (no fmt prefix): raw base64url of the JSON string
+    return Promise.resolve(new TextDecoder().decode(b64urlToBytes(s)));
   }
 
-  // Build on the current page (keep query, replace any existing hash). A page that
-  // uses hash routing itself conflicts with #spx= — that's the Step 5 file fallback.
+  // Build on the current page (keep query, replace any existing hash).
   function buildShareLink() {
-    return location.origin + location.pathname + location.search + '#spx=' + b64urlEncode(JSON.stringify(exportComments()));
+    return encodePayload(JSON.stringify(exportComments())).then(function (enc) {
+      return location.origin + location.pathname + location.search + '#spx=' + enc;
+    });
+  }
+
+  // A page that uses hash routing itself would collide with #spx= — treat any
+  // non-trivial existing hash (beyond a bare '#') as in-use and prefer the file.
+  function hashInUse() { return (location.hash || '').length > 1; }
+
+  // Download the comments as a .specter.json (the fallback when the link is too big
+  // or the page owns the hash). Same {url, comments} payload → same URL gate on import.
+  function downloadCommentsFile() {
+    var data = JSON.stringify(exportComments(), null, 2);
+    var url = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
+    var a = document.createElement('a');
+    a.href = url; a.download = 'comments.specter.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  // One coherent share action: a link by default, a file when it can't fit (or the
+  // page owns the hash). Returns a descriptor so the caller/UI can tell the user which.
+  function shareComments() {
+    if (!specs.length) return Promise.resolve({ kind: 'empty' });
+    if (hashInUse()) { downloadCommentsFile(); return Promise.resolve({ kind: 'file', reason: 'hash-routing' }); }
+    return buildShareLink().then(function (link) {
+      if (link.length > LINK_MAX) { downloadCommentsFile(); return { kind: 'file', reason: 'too-large', size: link.length }; }
+      return { kind: 'link', link: link };
+    });
+  }
+
+  // Pick a .specter.json (or any JSON) and import it — the file-fallback receiver.
+  function importCommentsFile() {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.addEventListener('change', function () {
+      var f = input.files && input.files[0];
+      if (!f) return;
+      var reader = new FileReader();
+      reader.onload = function () { var n = importComments(String(reader.result)); if (n > 0) { if (!fiActive) activate(); showPanel(); } };
+      reader.readAsText(f);
+    });
+    input.click();
   }
 
   // On load: if the URL carries #spx=, decode it, strip it from the address bar (so
   // the URL goes clean and a plain reload won't re-import), import, and surface it.
   function importFromHash() {
     var h = location.hash || '', k = h.indexOf('spx=');
-    if (k < 0) return 0;
+    if (k < 0) return Promise.resolve(0);
     var enc = h.slice(k + 4);
     try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
-    var json; try { json = b64urlDecode(enc); } catch (e) { return 0; }
-    var n = importComments(json);
-    if (n > 0) { if (!fiActive) activate(); showPanel(); }
-    return n;
+    return decodePayload(enc).then(function (json) {
+      var n = importComments(json);
+      if (n > 0) { if (!fiActive) activate(); showPanel(); }
+      return n;
+    }).catch(function () { return 0; });
   }
 
   // Re-anchor if the node detached, then scroll it into view. Returns false when
@@ -2255,7 +2322,10 @@ export function getClientScript(options: SpecterOptions): string {
   //   __specterImportComments(blob)                          // B: re-place them
   window.__specterExportComments = function() { return exportComments(); };
   window.__specterImportComments = function(p) { return importComments(p); };
-  window.__specterShareLink = function() { return buildShareLink(); };
+  window.__specterShareLink = function() { return buildShareLink(); };     // async → link
+  window.__specterShare = function() { return shareComments(); };          // async → {kind:'link'|'file'|'empty'}
+  window.__specterShareFile = function() { return downloadCommentsFile(); };
+  window.__specterImportFile = function() { return importCommentsFile(); };
 
   var _rt = (typeof browser !== 'undefined' && browser.runtime) || (typeof chrome !== 'undefined' && chrome.runtime);
   if (_rt && _rt.onMessage) {
