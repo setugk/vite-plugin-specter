@@ -2378,16 +2378,6 @@ export function getClientScript(options: SpecterOptions): string {
 
   window.__specterToggle = function() { if (fiActive) deactivate(); else activate(); };
 
-  // Step 1 test hooks (temporary — real UI comes in Step 6). In the demo console:
-  //   var blob = JSON.stringify(__specterExportComments())   // A: capture comments
-  //   __specterImportComments(blob)                          // B: re-place them
-  window.__specterExportComments = function() { return exportComments(); };
-  window.__specterImportComments = function(p) { return importComments(p); };
-  window.__specterShareLink = function() { return buildShareLink(); };     // async → link
-  window.__specterShare = function() { return shareComments(); };          // async → {kind:'link'|'file'|'empty'}
-  window.__specterShareFile = function() { return downloadCommentsFile(); };
-  window.__specterImportFile = function() { return importCommentsFile(); };
-
   var _rt = (typeof browser !== 'undefined' && browser.runtime) || (typeof chrome !== 'undefined' && chrome.runtime);
   if (_rt && _rt.onMessage) {
     _rt.onMessage.addListener(function(msg) {
