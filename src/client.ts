@@ -1068,40 +1068,66 @@ export function getClientScript(options: SpecterOptions): string {
 
   // Real resolver for a resolveLocator() anchor: #id/.class/[attr] query straight;
   // 'attr "value"' rebuilds the attribute selector; 'text "value"' scans own-text.
+  // Only trusts an anchor that resolves to EXACTLY ONE element — a class or CSS path
+  // shared by siblings (e.g. three .card boxes) would otherwise silently match the
+  // first one, mis-anchoring every comment onto it.
   function resolveFind(find) {
     if (!find) return null;
     var c = find.charAt(0);
-    if (c === '#' || c === '.' || c === '[') return safeQuery(find);
+    if (c === '#' || c === '.' || c === '[') return uniqueSel(find) ? safeQuery(find) : null;
     var q = find.indexOf(' "');
     if (q > 0 && find.charAt(find.length - 1) === '"') {
       var attr = find.slice(0, q), val = find.slice(q + 2, -1), trunc = false;
       if (val.charAt(val.length - 1) === '…') { trunc = true; val = val.slice(0, -1); }
       if (attr === 'text') return findByOwnText(val, trunc);
-      if (val.indexOf('"') < 0) return safeQuery('[' + attr + '="' + val + '"]');
+      if (val.indexOf('"') < 0) { var sel = '[' + attr + '="' + val + '"]'; return uniqueSel(sel) ? safeQuery(sel) : null; }
       return null;
     }
-    return safeQuery(find); // a bare CSS path
+    return uniqueSel(find) ? safeQuery(find) : null; // a bare CSS path — only if unambiguous
   }
 
-  // Re-find a shared comment's element: the find anchor first (robust), the
-  // nth-child path only as a fallback (brittle — shifts if siblings are added).
+  // Re-find a shared comment's element, using the fingerprint to DISAMBIGUATE (not
+  // only to detect change): prefer whichever candidate — the find anchor or the
+  // nth-child path — actually matches the stored signature. Falls back to a
+  // best-effort element so importComments can still tell "changed" from "not found".
   function reFindShared(item) {
-    var el = resolveFind(item.find);
-    if (!el || !el.isConnected) el = safeQuery(item.path);
-    return el;
+    var byFind = resolveFind(item.find);
+    if (byFind && (!item.fp || fingerprint(byFind) === item.fp)) return byFind;
+    var byPath = safeQuery(item.path);
+    if (byPath && (!item.fp || fingerprint(byPath) === item.fp)) return byPath;
+    return byFind || byPath || null;
+  }
+
+  // URL gate: two people must be on the SAME page for a shared comment to place.
+  // Match by origin + pathname only — hash AND query are dropped (the hash is the
+  // doSync fork bug; a trailing #route or ?ref shouldn't split the same page).
+  function pageKey(href) {
+    try { var u = new URL(href || location.href); return u.origin + u.pathname; }
+    catch (e) { return location.origin + location.pathname; }
   }
 
   function exportComments() {
-    return specs.map(function (s) {
-      return { find: resolveLocator(s.el), path: s.path, fp: fingerprint(s.el), note: s.note || '', kind: s.kind || 'element' };
-    });
+    return {
+      url: location.href, // gated on pageKey() at import; full href kept for reference
+      comments: specs.map(function (s) {
+        return { find: resolveLocator(s.el), path: s.path, fp: fingerprint(s.el), note: s.note || '', kind: s.kind || 'element' };
+      }),
+    };
   }
 
   function importComments(payload) {
     if (typeof payload === 'string') { try { payload = JSON.parse(payload); } catch (e) { return 0; } }
-    if (!Array.isArray(payload)) return 0;
+    var comments = null, srcUrl = '';
+    if (Array.isArray(payload)) comments = payload; // legacy pre-URL blob: no gate
+    else if (payload && Array.isArray(payload.comments)) { comments = payload.comments; srcUrl = payload.url || ''; }
+    if (!comments) return 0;
+    // Wrong page → decline rather than anchor onto whatever happens to match here.
+    if (srcUrl && pageKey(srcUrl) !== pageKey()) {
+      console.warn('[Specter] These comments are for ' + pageKey(srcUrl) + ' — not this page (' + pageKey() + '). Not imported.');
+      return 0;
+    }
     var added = 0;
-    payload.forEach(function (item) {
+    comments.forEach(function (item) {
       if (!item) return;
       var el = reFindShared(item), missing = false, reason = '';
       if (!el) { missing = true; reason = 'Couldn’t find this element on the page'; }
@@ -1119,6 +1145,46 @@ export function getClientScript(options: SpecterOptions): string {
     if (panelOpen) renderPanel();
     saveSpecs();
     return added;
+  }
+
+  // ── Transport: share link (#spx= fragment) ──────────────────────────────────
+  // The link is destination AND payload — pasted into Slack it looks like a normal
+  // URL; clicked, it lands the recipient on the exact page, so the URL gate is
+  // satisfied automatically. base64url of the JSON (UTF-8 safe, no padding); the
+  // split/join dodges regex escaping inside this template-literal client. Compression
+  // + the too-big → file fallback are Step 5.
+  function b64urlEncode(str) {
+    var bytes = new TextEncoder().encode(str), bin = '';
+    for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    var b = btoa(bin).split('+').join('-').split('/').join('_');
+    while (b.charAt(b.length - 1) === '=') b = b.slice(0, -1);
+    return b;
+  }
+  function b64urlDecode(s) {
+    s = s.split('-').join('+').split('_').join('/');
+    while (s.length % 4) s += '=';
+    var bin = atob(s), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+
+  // Build on the current page (keep query, replace any existing hash). A page that
+  // uses hash routing itself conflicts with #spx= — that's the Step 5 file fallback.
+  function buildShareLink() {
+    return location.origin + location.pathname + location.search + '#spx=' + b64urlEncode(JSON.stringify(exportComments()));
+  }
+
+  // On load: if the URL carries #spx=, decode it, strip it from the address bar (so
+  // the URL goes clean and a plain reload won't re-import), import, and surface it.
+  function importFromHash() {
+    var h = location.hash || '', k = h.indexOf('spx=');
+    if (k < 0) return 0;
+    var enc = h.slice(k + 4);
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+    var json; try { json = b64urlDecode(enc); } catch (e) { return 0; }
+    var n = importComments(json);
+    if (n > 0) { if (!fiActive) activate(); showPanel(); }
+    return n;
   }
 
   // Re-anchor if the node detached, then scroll it into view. Returns false when
@@ -2189,6 +2255,7 @@ export function getClientScript(options: SpecterOptions): string {
   //   __specterImportComments(blob)                          // B: re-place them
   window.__specterExportComments = function() { return exportComments(); };
   window.__specterImportComments = function(p) { return importComments(p); };
+  window.__specterShareLink = function() { return buildShareLink(); };
 
   var _rt = (typeof browser !== 'undefined' && browser.runtime) || (typeof chrome !== 'undefined' && chrome.runtime);
   if (_rt && _rt.onMessage) {
@@ -2197,8 +2264,9 @@ export function getClientScript(options: SpecterOptions): string {
     });
   }
 
-  restoreSpecs(); // rebuild any Specs saved from a previous load of this URL
-  scheduleSync(); // mirror restored Specs to the Claude bridge on load
+  restoreSpecs();   // rebuild any Specs saved from a previous load of this URL
+  importFromHash(); // if arrived via a #spx= share link, import + reveal the shared comments
+  scheduleSync();   // mirror restored Specs to the Claude bridge on load
 
   console.log('%c👻 Specter — Ctrl+Option+Z to toggle', 'color:#aaa;font-size:11px;');
 })();`;
