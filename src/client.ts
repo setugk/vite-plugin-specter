@@ -805,6 +805,7 @@ export function getClientScript(options: SpecterOptions): string {
     for (var i = 0; i < specs.length; i++) {
       var s = specs[i];
       if (!fiActive) { s.wrap.style.display = 'none'; continue; }
+      if (s.missing) { s.wrap.style.display = 'none'; continue; } // shared comment whose target is gone/changed
       if (!s.el || !s.el.isConnected) { var f = safeQuery(s.path); if (f) s.el = f; }
       if (!isVisible(s.el)) { s.wrap.style.display = 'none'; continue; }
       var r = s.el.getBoundingClientRect();
@@ -1000,7 +1001,7 @@ export function getClientScript(options: SpecterOptions): string {
   function saveSpecs() {
     try {
       if (!specs.length) localStorage.removeItem(STORAGE_KEY);
-      else localStorage.setItem(STORAGE_KEY, JSON.stringify(specs.map(function (s) { return { path: s.path, note: s.note, body: s.body, kind: s.kind, locate: s.locate }; })));
+      else localStorage.setItem(STORAGE_KEY, JSON.stringify(specs.map(function (s) { return { path: s.path, note: s.note, body: s.body, kind: s.kind, locate: s.locate, shared: s.shared, fp: s.fp, missing: s.missing, missReason: s.missReason }; })));
     } catch (e) {}
     scheduleSync(); // keep the Claude bridge mirrored to the current Specs
   }
@@ -1010,11 +1011,114 @@ export function getClientScript(options: SpecterOptions): string {
     try { data = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch (e) { return; }
     if (!Array.isArray(data) || !data.length) return;
     data.forEach(function (d) {
-      var spec = { el: safeQuery(d.path), path: d.path, note: d.note || '', body: d.body || '', kind: d.kind || 'element', locate: d.locate || '' };
+      var spec = { el: d.missing ? null : safeQuery(d.path), path: d.path, note: d.note || '', body: d.body || '', kind: d.kind || 'element', locate: d.locate || '', shared: !!d.shared, fp: d.fp || '', missing: !!d.missing, missReason: d.missReason || '' };
       specs.push(spec);
       createBadge(spec);
     });
     renumber();
+  }
+
+  // ─── Share Comments (human↔human) — Steps 1-2 ────────────────────────────────
+  // A shared comment is a LOCATOR, not a coordinate: on import we re-find the
+  // element and place a badge, exactly like restoreSpecs. Comments only — we carry
+  // the note + how to re-find the element, NEVER the props/measurements (body).
+  // Step 2 adds change-detection: a fingerprint travels with each comment; if the
+  // element is gone OR its signature changed, the comment shows as MISSING (panel
+  // only, greyed, with a reason) instead of being drawn on a guessed spot.
+
+  // Normalized element signature for change-detection: stable structural identity,
+  // NOT raw outerHTML (which false-trips on any text/attr churn). tag + sorted own
+  // classes + a few structural attrs + a short trimmed-text slice. The text slice is
+  // the strictness knob — include it to catch content edits, at the cost of a
+  // false-MISSING when dynamic text (a price/timestamp) changes under a stable node.
+  function normSig(el) {
+    if (!el || el.nodeType !== 1) return '';
+    var cls = Array.prototype.slice.call(el.classList)
+      .filter(function (c) { return c.indexOf('__specter') !== 0; }).sort().join('.');
+    var attrs = ['type', 'role', 'name', 'href', 'aria-label'].map(function (a) {
+      var v = el.getAttribute(a); return v ? a + '=' + v.trim() : '';
+    }).filter(Boolean).join('|');
+    var txt = (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 50);
+    return el.tagName.toLowerCase() + '#' + cls + '#' + attrs + '#' + txt;
+  }
+  // djb2 xor → short base36 hash. Zero-dep; collisions don't matter (a match just
+  // means "unchanged enough", and the re-find already narrowed us to one element).
+  function fingerprint(el) {
+    var s = normSig(el);
+    if (!s) return '';
+    var h = 5381, i = s.length;
+    while (i) h = (h * 33) ^ s.charCodeAt(--i);
+    return (h >>> 0).toString(36);
+  }
+
+  // Scan for an element whose OWN text matches (trunc = the stored anchor was cut to
+  // 40 chars). Ambiguous (>1 match) → null, so we fall through to the nth-child path
+  // rather than guess. Skips Specter's own UI.
+  function findByOwnText(val, trunc) {
+    var all = document.body ? document.body.getElementsByTagName('*') : [], hit = null;
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el.closest && el.closest('[data-specter-ui]')) continue;
+      var t = ownText(el);
+      if (!t) continue;
+      if (trunc ? (t.slice(0, 40) === val) : (t === val)) { if (hit) return null; hit = el; }
+    }
+    return hit;
+  }
+
+  // Real resolver for a resolveLocator() anchor: #id/.class/[attr] query straight;
+  // 'attr "value"' rebuilds the attribute selector; 'text "value"' scans own-text.
+  function resolveFind(find) {
+    if (!find) return null;
+    var c = find.charAt(0);
+    if (c === '#' || c === '.' || c === '[') return safeQuery(find);
+    var q = find.indexOf(' "');
+    if (q > 0 && find.charAt(find.length - 1) === '"') {
+      var attr = find.slice(0, q), val = find.slice(q + 2, -1), trunc = false;
+      if (val.charAt(val.length - 1) === '…') { trunc = true; val = val.slice(0, -1); }
+      if (attr === 'text') return findByOwnText(val, trunc);
+      if (val.indexOf('"') < 0) return safeQuery('[' + attr + '="' + val + '"]');
+      return null;
+    }
+    return safeQuery(find); // a bare CSS path
+  }
+
+  // Re-find a shared comment's element: the find anchor first (robust), the
+  // nth-child path only as a fallback (brittle — shifts if siblings are added).
+  function reFindShared(item) {
+    var el = resolveFind(item.find);
+    if (!el || !el.isConnected) el = safeQuery(item.path);
+    return el;
+  }
+
+  function exportComments() {
+    return specs.map(function (s) {
+      return { find: resolveLocator(s.el), path: s.path, fp: fingerprint(s.el), note: s.note || '', kind: s.kind || 'element' };
+    });
+  }
+
+  function importComments(payload) {
+    if (typeof payload === 'string') { try { payload = JSON.parse(payload); } catch (e) { return 0; } }
+    if (!Array.isArray(payload)) return 0;
+    var added = 0;
+    payload.forEach(function (item) {
+      if (!item) return;
+      var el = reFindShared(item), missing = false, reason = '';
+      if (!el) { missing = true; reason = 'Couldn’t find this element on the page'; }
+      else if (item.fp && fingerprint(el) !== item.fp) { missing = true; reason = 'This element changed — can’t place the comment'; }
+      // body stays empty on purpose: comments-only, never the shared element's props.
+      // A MISSING spec keeps el=null so it's never drawn or re-anchored via its path.
+      var spec = { el: missing ? null : el, path: item.path || '', note: item.note || '', body: '', kind: item.kind || 'element', locate: '', shared: true, fp: item.fp || '', missing: missing, missReason: reason };
+      specs.push(spec);
+      createBadge(spec);
+      added++;
+    });
+    renumber();
+    reflowSpecs();
+    updatePill();
+    if (panelOpen) renderPanel();
+    saveSpecs();
+    return added;
   }
 
   // Re-anchor if the node detached, then scroll it into view. Returns false when
@@ -1321,7 +1425,8 @@ export function getClientScript(options: SpecterOptions): string {
     }
     var focusEditor = null, measures = [];
     specs.forEach(function (spec, i) {
-      var visible = specVisible(spec);
+      var missing = !!spec.missing;
+      var visible = missing ? false : specVisible(spec); // don't specVisible() a missing spec — it would re-anchor via path
       var editing = (panelEditSpec === spec);
       var row = document.createElement('div');
       Object.assign(row.style, {
@@ -1435,9 +1540,25 @@ export function getClientScript(options: SpecterOptions): string {
         content.appendChild(note);
         content.appendChild(meta);
 
+        // Shared comment whose target is gone/changed: MISSING (greyed, reason shown,
+        // never drawn on the page — design: show missing, don't guess a spot).
+        if (missing) {
+          row.style.opacity = '0.7';
+          var mbar = document.createElement('div');
+          Object.assign(mbar.style, { display: 'flex', alignItems: 'center', gap: '7px', marginTop: '2px', flexWrap: 'wrap' });
+          var mtag = document.createElement('span');
+          mtag.textContent = 'MISSING';
+          Object.assign(mtag.style, { fontSize: '11px', fontWeight: '700', letterSpacing: '0.05em', color: '#fff', background: '#8B4A57', borderRadius: '4px', padding: '2px 6px', flexShrink: '0' });
+          var mhint = document.createElement('span');
+          mhint.textContent = spec.missReason || 'Not on this page';
+          Object.assign(mhint.style, { fontSize: '11px', color: '#C9CBD2', overflow: 'hidden', textOverflow: 'ellipsis' });
+          mbar.appendChild(mtag);
+          mbar.appendChild(mhint);
+          content.appendChild(mbar);
+        }
         // Hidden element (e.g. inside a closed modal): flag it and say how to reveal it,
         // so hidden Specs are findable in a long list instead of silently unreachable.
-        if (!visible) {
+        else if (!visible) {
           var hbar = document.createElement('div');
           Object.assign(hbar.style, { display: 'flex', alignItems: 'center', gap: '7px', marginTop: '2px', flexWrap: 'wrap' });
           var tag = document.createElement('span');
@@ -2062,6 +2183,12 @@ export function getClientScript(options: SpecterOptions): string {
   }, true);
 
   window.__specterToggle = function() { if (fiActive) deactivate(); else activate(); };
+
+  // Step 1 test hooks (temporary — real UI comes in Step 6). In the demo console:
+  //   var blob = JSON.stringify(__specterExportComments())   // A: capture comments
+  //   __specterImportComments(blob)                          // B: re-place them
+  window.__specterExportComments = function() { return exportComments(); };
+  window.__specterImportComments = function(p) { return importComments(p); };
 
   var _rt = (typeof browser !== 'undefined' && browser.runtime) || (typeof chrome !== 'undefined' && chrome.runtime);
   if (_rt && _rt.onMessage) {
