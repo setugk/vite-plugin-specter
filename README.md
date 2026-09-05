@@ -112,6 +112,19 @@ font: Inter 400 19/28.5  ·  color: #c7cbd1
 
 Paste into Claude, Cursor, or any AI assistant — the instructions travel with the elements, so there's nothing left to explain.
 
+## Share comments with another person
+
+Specs aren't only for your AI — you can send them to a **person**. Mark comments on a page, open the Specs panel (**L**), and click **Share**. Specter copies a link; whoever opens it — on the same page, with Specter installed — sees your comments re-anchored on the exact same elements.
+
+- **Comments only.** Only your notes and how to re-find each element travel — never the CSS properties or measurements. You're sharing feedback, not internals.
+- **Same page, same element.** Comments re-anchor by a source locator, not screen coordinates. If the page changed so an element is gone or different, that comment shows as **MISSING** in the panel (with the reason) instead of landing on the wrong spot.
+- **A link, or a file.** Small reviews copy as a normal link (`…/pricing#spx=…`) you paste into Slack or a message — the link is both the destination and the payload, so it opens the right page automatically. A large batch (or a page that uses `#`-routing) downloads a `comments.specter.json` file to send instead; use the **Import** button to open one you receive.
+- **Zero backend.** The comments travel inside the link or file itself — no accounts, no server. One-way (no threads).
+
+**Both people need Specter (v0.7+).** This is where the **browser extension** shines: it works on any deployed or staging URL, so two people looking at the same prototype can trade feedback without a shared dev server. A share link opened without Specter just shows the normal page — nothing breaks.
+
+> Specter also ships as a **browser extension** for Chrome and Firefox, which runs on *any* website (no Vite required). The Share Comments flow above is designed for it. See the [GitHub repo](https://github.com/setugk/vite-plugin-specter) for links.
+
 ## Shortcut reference
 
 | Action | Shortcut |
