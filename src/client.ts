@@ -71,6 +71,45 @@ export function getClientScript(options: SpecterOptions): string {
   function markUI(el) { el.setAttribute('data-specter-ui', ''); return el; }
   function isUI(el) { return !!(el && el.closest && el.closest('[data-specter-ui]')); }
 
+  // ─── Hydration-proof mounting ───────────────────────────────────────────────
+  // We inject at document_end, but frameworks that hydrate <body> (Next.js App
+  // Router / React 18-19, some Remix/Gatsby) then reconcile away DOM nodes they
+  // didn't render — silently deleting Specter's UI on those sites (pill/panel
+  // vanish; badges added later survive because they're created post-hydration).
+  // Track our persistent singletons and re-attach any that gets detached, so the
+  // UI survives the hydration pass and later SPA re-renders. The parent is resolved
+  // fresh on each remount so a wholesale body/head element swap is handled too.
+  var _mounted = [];
+  function mount(node, where) {
+    var parent = where === 'head' ? document.head : document.body;
+    if (parent) parent.appendChild(node);
+    _mounted.push({ node: node, where: where });
+    return node;
+  }
+  var _remountQueued = false;
+  function remountDetached() {
+    _remountQueued = false;
+    for (var i = 0; i < _mounted.length; i++) {
+      var m = _mounted[i];
+      if (m.node.isConnected) continue;
+      var p = m.where === 'head' ? document.head : document.body;
+      if (p) p.appendChild(m.node); // re-append; isConnected guard above prevents an observer loop
+    }
+  }
+  try {
+    var _defer = window.requestAnimationFrame ? function (fn) { requestAnimationFrame(fn); } : function (fn) { setTimeout(fn, 0); };
+    var _mo = new MutationObserver(function () {
+      if (_remountQueued) return;
+      _remountQueued = true;
+      _defer(remountDetached); // coalesce a burst of mutations into one restore pass
+    });
+    // childList on the roots is enough — every singleton is a direct child of
+    // body/head; watching documentElement too catches a body/head element swap.
+    _mo.observe(document.documentElement, { childList: true });
+    _mo.observe(document.body, { childList: true });
+    _mo.observe(document.head, { childList: true });
+  } catch (e) {}
+
   // Attach a hover effect to an interactive icon/button: apply the "on" styles
   // while hovered, restore the "off" styles on leave (keeps things clickable-feeling).
   function hoverFx(el, on, off) {
@@ -97,7 +136,7 @@ export function getClientScript(options: SpecterOptions): string {
     boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
     display: 'none',
   });
-  document.body.appendChild(tooltip);
+  mount(tooltip);
 
   // Measure overlay
   var measureOverlay = document.createElement('div');
@@ -109,7 +148,7 @@ export function getClientScript(options: SpecterOptions): string {
     pointerEvents: 'none',
     display: 'none',
   });
-  document.body.appendChild(measureOverlay);
+  mount(measureOverlay);
 
   // ─── Pill ─────────────────────────────────────────────────────────────────
   var pillWrap = document.createElement('div');
@@ -185,40 +224,33 @@ export function getClientScript(options: SpecterOptions): string {
   var pillText = document.createElement('span');
   Object.assign(pillText.style, { display: 'none', color: '#f3d9fb' });
 
+  // Panel toggle — icon + label so it's self-explanatory. Label reflects state
+  // (Open/Close) and always names the shortcut.
   var listBtn = document.createElement('span');
-  listBtn.innerHTML = LIST;
-  listBtn.title = 'Show Specs panel (L)';
+  listBtn.title = 'Toggle Specs panel (L)';
   Object.assign(listBtn.style, {
     display: 'none',
     alignItems: 'center',
-    cursor: 'pointer',
-    color: '#fff',
-    flexShrink: '0',
-    padding: '4px 6px',
-    marginLeft: '2px',
-    borderRadius: '999px',
-    background: 'rgba(255,255,255,0.16)',
-  });
-  listBtn.addEventListener('click', function (e) { e.stopPropagation(); togglePanel(); });
-  hoverFx(listBtn, { background: 'rgba(255,255,255,0.32)' }, { background: 'rgba(255,255,255,0.16)' });
-
-  var clearBtn = document.createElement('span');
-  clearBtn.textContent = '✕ Delete all';
-  clearBtn.title = 'Delete all annotations';
-  Object.assign(clearBtn.style, {
-    display: 'none',
+    gap: '6px',
     cursor: 'pointer',
     color: '#fff',
     fontSize: '11px',
-    fontWeight: '600',
     flexShrink: '0',
-    padding: '2px 8px',
+    padding: '4px 10px',
     marginLeft: '2px',
     borderRadius: '999px',
     background: 'rgba(255,255,255,0.16)',
   });
-  clearBtn.addEventListener('click', function (e) { e.stopPropagation(); removeAllSpecs(); });
-  hoverFx(clearBtn, { background: 'rgba(255,255,255,0.32)' }, { background: 'rgba(255,255,255,0.16)' });
+  var listIcon = document.createElement('span');
+  listIcon.innerHTML = LIST;
+  Object.assign(listIcon.style, { display: 'flex', alignItems: 'center' });
+  var listLabel = document.createElement('span');
+  listBtn.appendChild(listIcon);
+  listBtn.appendChild(listLabel);
+  function updateListBtn() { listLabel.textContent = (panelOpen ? 'Close' : 'Open') + ' sidebar [L]'; }
+  updateListBtn();
+  listBtn.addEventListener('click', function (e) { e.stopPropagation(); togglePanel(); });
+  hoverFx(listBtn, { background: 'rgba(255,255,255,0.32)' }, { background: 'rgba(255,255,255,0.16)' });
 
   var chevron = document.createElement('span');
   chevron.textContent = '›';
@@ -249,16 +281,15 @@ export function getClientScript(options: SpecterOptions): string {
   pill.appendChild(pillSync);
   pill.appendChild(pillText);
   pill.appendChild(listBtn);
-  pill.appendChild(clearBtn);
   pill.appendChild(chevron);
   pillWrap.appendChild(pill);
-  document.body.appendChild(pillWrap);
+  mount(pillWrap);
 
   // Keyframes for the sync spinner (injected once).
   var spinStyle = document.createElement('style');
   spinStyle.textContent = '@keyframes __specterSpin{to{transform:rotate(360deg)}}';
   markUI(spinStyle);
-  document.head.appendChild(spinStyle);
+  mount(spinStyle, 'head');
 
   // Shared dot styling for the control-bar AND side-panel sync indicators, so they
   // always match: spinner while syncing, green when synced, red on error.
@@ -310,7 +341,7 @@ export function getClientScript(options: SpecterOptions): string {
   // The mode is shown at all times (persistent prefix), so you always know whether
   // hovering shows properties, measurements, or nothing (Comment).
   function modeLabel() {
-    return commentMode ? 'Comment' : (measureMode ? 'Measure' : 'Properties');
+    return (commentMode ? 'Comment' : (measureMode ? 'Measure' : 'Properties')) + ' mode';
   }
 
   function expandPill(text) {
@@ -318,7 +349,7 @@ export function getClientScript(options: SpecterOptions): string {
     pillText.style.display = 'inline';
     chevron.style.display = 'inline';
     listBtn.style.display = 'inline-flex'; // always reachable — the panel is also where you Import a shared file
-    clearBtn.style.display = specs.length > 0 ? 'inline' : 'none';
+    updateListBtn();
     pillExpanded = true;
     // Just the mode (+ the action buttons when Specs exist). Shortcuts live in the
     // side panel now, so the pill stays short.
@@ -333,14 +364,12 @@ export function getClientScript(options: SpecterOptions): string {
     pill.style.maxWidth = '220px';
     chevron.style.display = 'none';
     listBtn.style.display = 'none';
-    clearBtn.style.display = 'none';
     pillExpanded = false;
   }
 
   function flashMode() {
     if (pillExpanded && pillWrap.matches(':hover')) return;
-    var text = commentMode ? 'Comment mode' : (measureMode ? 'Measure mode' : 'Properties mode');
-    expandPill(text);
+    expandPill(modeLabel());
     clearTimeout(flashTimer);
     flashTimer = setTimeout(function () {
       if (!pillWrap.matches(':hover') && specs.length === 0 && !pinEl) collapsePill();
@@ -466,10 +495,13 @@ export function getClientScript(options: SpecterOptions): string {
     var cur = el;
     for (var i = 0; i < 3 && cur && cur !== document.body; i++) {
       var part = cur.tagName.toLowerCase();
-      if (cur.id) { part += '#' + cur.id; parts.unshift(part); break; }
+      if (cur.id) { part += '#' + cssEsc(cur.id); parts.unshift(part); break; }
       var cls = Array.prototype.slice.call(cur.classList).filter(function (c) { return c.indexOf('__specter') !== 0; });
       if (cls.length) {
-        part += '.' + cls.slice(0, 2).join('.');
+        // Escape each class: Tailwind classes like lg:block / bg-[#f5f5dc] are
+        // invalid raw in a selector (the : reads as a pseudo, [# as an attr) and
+        // throw on query, so they must be CSS.escape-d first.
+        part += '.' + cls.slice(0, 2).map(cssEsc).join('.');
       } else if (cur.parentElement) {
         var sameTag = Array.prototype.slice.call(cur.parentElement.children).filter(function (c) { return c.tagName === cur.tagName; });
         if (sameTag.length > 1) {
@@ -549,13 +581,13 @@ export function getClientScript(options: SpecterOptions): string {
     var i, v;
     var testAttrs = ['data-testid', 'data-test-id', 'data-test', 'data-cy', 'data-qa'];
     for (i = 0; i < testAttrs.length; i++) { v = el.getAttribute(testAttrs[i]); if (v) { var ts = '[' + testAttrs[i] + '="' + cssEsc(v) + '"]'; if (uniqueSel(ts)) return ts; } }
-    if (el.id && !isHashedId(el.id) && uniqueSel('#' + cssEsc(el.id))) return '#' + el.id;
+    if (el.id && !isHashedId(el.id) && uniqueSel('#' + cssEsc(el.id))) return '#' + cssEsc(el.id);
     var attrs = ['aria-label', 'name', 'placeholder', 'alt', 'title'];
     for (i = 0; i < attrs.length; i++) { v = el.getAttribute(attrs[i]); if (v && v.trim()) { v = v.trim(); if (uniqueSel('[' + attrs[i] + '="' + cssEsc(v) + '"]')) return attrs[i] + ' "' + v.slice(0, 60) + '"'; } }
     var txt = ownText(el);
     if (txt && uniqueTextAnchor(el, txt)) return 'text "' + txt.slice(0, 40) + (txt.length > 40 ? '…' : '') + '"';
     var cls = ownClass(el);
-    if (cls) return '.' + cls;
+    if (cls) return '.' + cssEsc(cls);
     return getSelector(el); // fallback: the CSS path
   }
 
@@ -729,11 +761,20 @@ export function getClientScript(options: SpecterOptions): string {
   function elementPath(el) {
     if (!el || el.nodeType !== 1) return '';
     var parts = [], cur = el;
-    while (cur && cur.nodeType === 1 && cur !== document.body && parts.length < 6) {
-      if (cur.id) { try { parts.unshift('#' + CSS.escape(cur.id)); } catch (e) { parts.unshift('#' + cur.id); } break; }
+    // Root the path at <body> or a stable id, and index with nth-OF-TYPE rather than
+    // nth-child: a hydrated page injects <script>/<style> siblings that shift a raw
+    // child index (the old div:nth-child(11) bug — matched a different node, or
+    // none, on the recipient). nth-of-type counts only same-tag siblings, so it
+    // survives that. Deeper cap (12) so the chain reaches a rooting anchor.
+    while (cur && cur.nodeType === 1 && parts.length < 12) {
+      if (cur === document.body) { parts.unshift('body'); break; }
+      if (cur.id && !isHashedId(cur.id)) { parts.unshift('#' + cssEsc(cur.id)); break; }
       var seg = cur.tagName.toLowerCase();
       var parent = cur.parentElement;
-      if (parent) seg += ':nth-child(' + (Array.prototype.indexOf.call(parent.children, cur) + 1) + ')';
+      if (parent) {
+        var same = Array.prototype.filter.call(parent.children, function (c) { return c.tagName === cur.tagName; });
+        if (same.length > 1) seg += ':nth-of-type(' + (Array.prototype.indexOf.call(same, cur) + 1) + ')';
+      }
       parts.unshift(seg);
       cur = cur.parentElement;
     }
@@ -809,6 +850,11 @@ export function getClientScript(options: SpecterOptions): string {
     var vis = [];
     for (var i = 0; i < specs.length; i++) {
       var s = specs[i];
+      // Badges created at import-time can be wiped by a framework hydrating <body>
+      // (same cause as the singleton mount guard). Re-attach a detached wrap so the
+      // pin reappears; a removed spec is already out of the specs array, so this
+      // never resurrects a deleted badge.
+      if (s.wrap && !s.wrap.isConnected && document.body) document.body.appendChild(s.wrap);
       if (!fiActive) { s.wrap.style.display = 'none'; s._liveVis = false; continue; }
       if (s.missing) { s.wrap.style.display = 'none'; s._liveVis = false; continue; } // shared comment whose target is gone/changed
       if (!s.el || !s.el.isConnected) { var f = safeQuery(s.path); if (f) s.el = f; }
@@ -1008,6 +1054,16 @@ export function getClientScript(options: SpecterOptions): string {
     saveSpecs();
   }
 
+  // Drop every imported (shared) spec, leaving the user's own local ones. Used by
+  // importComments so a received share replaces the prior set instead of stacking.
+  function removeSharedSpecs() {
+    if (highlightSpec && highlightSpec.shared) highlightSpec = null;
+    if (panelEditSpec && panelEditSpec.shared) panelEditSpec = null;
+    for (var i = specs.length - 1; i >= 0; i--) {
+      if (specs[i].shared) { if (specs[i].wrap) specs[i].wrap.remove(); specs.splice(i, 1); }
+    }
+  }
+
   // ─── Reload insurance (localStorage, per-URL, zero network) ──────────────────
   // Persist only the serializable parts of each Spec; the live element ref and
   // DOM nodes are rebuilt on restore (re-anchored best-effort via the CSS path).
@@ -1039,11 +1095,13 @@ export function getClientScript(options: SpecterOptions): string {
   // element is gone OR its signature changed, the comment shows as MISSING (panel
   // only, greyed, with a reason) instead of being drawn on a guessed spot.
 
-  // Normalized element signature for change-detection: stable structural identity,
-  // NOT raw outerHTML (which false-trips on any text/attr churn). tag + sorted own
-  // classes + a few structural attrs + a short trimmed-text slice. The text slice is
-  // the strictness knob — include it to catch content edits, at the cost of a
-  // false-MISSING when dynamic text (a price/timestamp) changes under a stable node.
+  // Normalized element signature — a STRUCTURAL identity used to disambiguate which
+  // element a shared comment belongs to (and to scan for it when selectors fail).
+  // Deliberately NO raw text: page-load-dynamic text (a clock, a random greeting, a
+  // price) was false-tripping this and blocking re-anchor on otherwise-identical
+  // pages. tag + sorted own classes + key attrs + child count identifies the node
+  // without that fragility. (Trade-off: pure text edits under a stable node no
+  // longer read as "changed" — placement is favoured over change-detection.)
   function normSig(el) {
     if (!el || el.nodeType !== 1) return '';
     var cls = Array.prototype.slice.call(el.classList)
@@ -1051,8 +1109,7 @@ export function getClientScript(options: SpecterOptions): string {
     var attrs = ['type', 'role', 'name', 'href', 'aria-label'].map(function (a) {
       var v = el.getAttribute(a); return v ? a + '=' + v.trim() : '';
     }).filter(Boolean).join('|');
-    var txt = (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 50);
-    return el.tagName.toLowerCase() + '#' + cls + '#' + attrs + '#' + txt;
+    return el.tagName.toLowerCase() + '#' + cls + '#' + attrs + '#' + el.childElementCount;
   }
   // djb2 xor → short base36 hash. Zero-dep; collisions don't matter (a match just
   // means "unchanged enough", and the re-find already narrowed us to one element).
@@ -1064,51 +1121,91 @@ export function getClientScript(options: SpecterOptions): string {
     return (h >>> 0).toString(36);
   }
 
-  // Scan for an element whose OWN text matches (trunc = the stored anchor was cut to
-  // 40 chars). Ambiguous (>1 match) → null, so we fall through to the nth-child path
-  // rather than guess. Skips Specter's own UI.
-  function findByOwnText(val, trunc) {
-    var all = document.body ? document.body.getElementsByTagName('*') : [], hit = null;
+  function queryAll(sel) { try { return sel ? Array.prototype.slice.call(document.querySelectorAll(sel)) : []; } catch (e) { return []; } }
+
+  // Every element whose OWN text matches (trunc = the stored anchor was cut to 40
+  // chars). Returns ALL matches — the fingerprint picks among them in reFindShared,
+  // so a repeated label (e.g. two "Read more") no longer forces a MISSING. Skips UI.
+  function findAllByOwnText(val, trunc) {
+    var all = document.body ? document.body.getElementsByTagName('*') : [], out = [];
     for (var i = 0; i < all.length; i++) {
       var el = all[i];
       if (el.closest && el.closest('[data-specter-ui]')) continue;
       var t = ownText(el);
       if (!t) continue;
-      if (trunc ? (t.slice(0, 40) === val) : (t === val)) { if (hit) return null; hit = el; }
+      if (trunc ? (t.slice(0, 40) === val) : (t === val)) out.push(el);
     }
-    return hit;
+    return out;
   }
 
-  // Real resolver for a resolveLocator() anchor: #id/.class/[attr] query straight;
-  // 'attr "value"' rebuilds the attribute selector; 'text "value"' scans own-text.
-  // Only trusts an anchor that resolves to EXACTLY ONE element — a class or CSS path
-  // shared by siblings (e.g. three .card boxes) would otherwise silently match the
-  // first one, mis-anchoring every comment onto it.
-  function resolveFind(find) {
-    if (!find) return null;
+  // Candidate elements for a resolveLocator() anchor: #id/.class/[attr]/CSS-path via
+  // querySelectorAll; 'attr "value"' rebuilds the attribute selector; 'text "value"'
+  // scans own-text. Returns ALL matches (may be >1) — reFindShared narrows by
+  // fingerprint rather than rejecting anything ambiguous up front.
+  function resolveFindCandidates(find) {
+    if (!find) return [];
     var c = find.charAt(0);
-    if (c === '#' || c === '.' || c === '[') return uniqueSel(find) ? safeQuery(find) : null;
+    if (c === '#' || c === '.' || c === '[') return queryAll(find);
     var q = find.indexOf(' "');
     if (q > 0 && find.charAt(find.length - 1) === '"') {
       var attr = find.slice(0, q), val = find.slice(q + 2, -1), trunc = false;
       if (val.charAt(val.length - 1) === '…') { trunc = true; val = val.slice(0, -1); }
-      if (attr === 'text') return findByOwnText(val, trunc);
-      if (val.indexOf('"') < 0) { var sel = '[' + attr + '="' + val + '"]'; return uniqueSel(sel) ? safeQuery(sel) : null; }
-      return null;
+      if (attr === 'text') return findAllByOwnText(val, trunc);
+      if (val.indexOf('"') < 0) return queryAll('[' + attr + '="' + val + '"]');
+      return [];
     }
-    return uniqueSel(find) ? safeQuery(find) : null; // a bare CSS path — only if unambiguous
+    return queryAll(find); // a bare CSS path
   }
 
-  // Re-find a shared comment's element, using the fingerprint to DISAMBIGUATE (not
-  // only to detect change): prefer whichever candidate — the find anchor or the
-  // nth-child path — actually matches the stored signature. Falls back to a
-  // best-effort element so importComments can still tell "changed" from "not found".
+  // Re-find a shared comment's element. The fingerprint is the DISAMBIGUATOR, not
+  // just a change-detector: gather every candidate from the find anchor AND the
+  // nth-child path, then return the one whose signature matches — so a locator
+  // shared by siblings (e.g. div:nth-child(1)) still resolves on the same page
+  // instead of failing as ambiguous. With no fp match: hand back a lone candidate
+  // (so importComments can say "changed"), else null ("couldn't find").
+  // Whole-DOM scan for the one element whose structural signature matches — the
+  // last-resort re-finder when both the find anchor and the nth-of-type path fail
+  // (e.g. selectors that don't round-trip, or a shifted structure). >1 match → bail
+  // (ambiguous, don't guess). Skips Specter's own UI.
+  function findByFingerprint(fp) {
+    if (!fp) return null;
+    var all = document.body ? document.body.getElementsByTagName('*') : [], hit = null;
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el.closest && el.closest('[data-specter-ui]')) continue;
+      if (fingerprint(el) === fp) { if (hit) return null; hit = el; }
+    }
+    return hit;
+  }
+
+  function fpOk(el, item) { return !item.fp || fingerprint(el) === item.fp; }
+
+  // Rank the signals rather than pooling them, so a specific locator always beats a
+  // vague one:
+  //   1. a find anchor that resolves to exactly ONE element (id / unique text / class)
+  //      — the strongest, most semantic signal;
+  //   2. the rooted nth-of-type path, if unique — this is what disambiguates repeated
+  //      structure (a class-path find matches every paragraph; the path pins the exact
+  //      one). Pooling let an ambiguous find shadow the unique path — the mis-anchor bug;
+  //   3. the structural fingerprint across the pooled candidates, then a DOM-wide scan;
+  //   4. any lone resolution.
+  // fp guards 1 and 2 so a drifted anchor can't win blindly, but a unique anchor with a
+  // changed signature is still trusted at step 4 (placement over false-MISSING).
   function reFindShared(item) {
-    var byFind = resolveFind(item.find);
-    if (byFind && (!item.fp || fingerprint(byFind) === item.fp)) return byFind;
-    var byPath = safeQuery(item.path);
-    if (byPath && (!item.fp || fingerprint(byPath) === item.fp)) return byPath;
-    return byFind || byPath || null;
+    var byFind = resolveFindCandidates(item.find);
+    if (byFind.length === 1 && fpOk(byFind[0], item)) return byFind[0];
+    var byPath = item.path ? queryAll(item.path) : [];
+    if (byPath.length === 1 && fpOk(byPath[0], item)) return byPath[0];
+    var cands = [], i, all = byFind.concat(byPath);
+    for (i = 0; i < all.length; i++) if (all[i] && cands.indexOf(all[i]) < 0) cands.push(all[i]);
+    if (item.fp) {
+      for (i = 0; i < cands.length; i++) if (fingerprint(cands[i]) === item.fp) return cands[i];
+      var scan = findByFingerprint(item.fp);       // selectors failed/ambiguous → find it by signature
+      if (scan) return scan;
+    }
+    if (byFind.length === 1) return byFind[0];      // unique anchor, fp drifted — trust the anchor
+    if (byPath.length === 1) return byPath[0];
+    return cands.length === 1 ? cands[0] : null;
   }
 
   // URL gate: two people must be on the SAME page for a shared comment to place.
@@ -1139,12 +1236,19 @@ export function getClientScript(options: SpecterOptions): string {
       console.warn('[Specter] These comments are for ' + pageKey(srcUrl) + ' — not this page (' + pageKey() + '). Not imported.');
       return 0;
     }
+    // A received share REPLACES the previously-imported set: re-opening the same
+    // link (or a refreshed one) gives exactly that set, never a stacked-up pile of
+    // duplicates across rounds. Your OWN local specs (shared:false) are untouched.
+    removeSharedSpecs();
     var added = 0;
     comments.forEach(function (item) {
       if (!item) return;
+      // reFindShared already used the fingerprint to pick/scan the right element, so
+      // trust its result: if it located a node, PLACE the comment. Only a genuine
+      // no-match is MISSING — we no longer hide a found element just because its
+      // signature drifted (that over-fired on dynamic pages and buried real pins).
       var el = reFindShared(item), missing = false, reason = '';
       if (!el) { missing = true; reason = 'Couldn’t find this element on the page'; }
-      else if (item.fp && fingerprint(el) !== item.fp) { missing = true; reason = 'This element changed — can’t place the comment'; }
       // body stays empty on purpose: comments-only, never the shared element's props.
       // A MISSING spec keeps el=null so it's never drawn or re-anchored via its path.
       var spec = { el: missing ? null : el, path: item.path || '', note: item.note || '', body: '', kind: item.kind || 'element', locate: '', shared: true, fp: item.fp || '', missing: missing, missReason: reason };
@@ -1523,7 +1627,7 @@ export function getClientScript(options: SpecterOptions): string {
     Object.assign(body.style, { display: 'none', padding: '0 16px 12px' }); // collapsed by default
     rows.forEach(function (r) {
       var row = document.createElement('div');
-      Object.assign(row.style, { display: 'flex', gap: '8px', marginBottom: '2px' });
+      Object.assign(row.style, { display: 'flex', gap: '8px', marginBottom: '8px' });
       var k = document.createElement('span');
       k.textContent = r[0];
       Object.assign(k.style, { color: '#E0A3F5', fontWeight: '700', minWidth: '78px', flexShrink: '0' });
@@ -1548,7 +1652,7 @@ export function getClientScript(options: SpecterOptions): string {
   panelWrap.appendChild(panelHint);
   panelWrap.appendChild(panelList);
   panelWrap.appendChild(panelKeys);
-  document.body.appendChild(panelWrap);
+  mount(panelWrap);
 
   // Panel scroll and page scroll are mutually exclusive: wheel over the scrollable list
   // scrolls it natively (overscroll-behavior:contain stops it chaining at the bounds);
@@ -1807,8 +1911,8 @@ export function getClientScript(options: SpecterOptions): string {
     panelVisSig = liveVisSig(); // record what this render reflects, so reflow only re-renders on a real flip
   }
 
-  function showPanel() { panelOpen = true; renderPanel(); panelWrap.style.transform = 'translateX(0)'; if (BRIDGE) doSync(); }
-  function hidePanel() { panelOpen = false; panelEditSpec = null; panelWrap.style.transform = 'translateX(100%)'; }
+  function showPanel() { panelOpen = true; renderPanel(); panelWrap.style.transform = 'translateX(0)'; updateListBtn(); if (BRIDGE) doSync(); }
+  function hidePanel() { panelOpen = false; panelEditSpec = null; panelWrap.style.transform = 'translateX(100%)'; updateListBtn(); }
   function togglePanel() { if (panelOpen) hidePanel(); else if (fiActive) showPanel(); }
 
   // ─── Spec editor (annotation box: add / edit / delete) ───────────────────────
