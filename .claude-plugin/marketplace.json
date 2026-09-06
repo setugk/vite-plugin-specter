@@ -1,0 +1,24 @@
+{
+  "name": "specter",
+  "owner": {
+    "name": "Setu Kathawate",
+    "email": "dev@setugk.com",
+    "url": "https://github.com/setugk"
+  },
+  "plugins": [
+    {
+      "name": "specter",
+      "source": "./plugin",
+      "description": "Pull Specter's browser annotations into Claude Code and implement them. Auto-runs the local bridge and adds /spectify.",
+      "version": "0.7.3",
+      "author": {
+        "name": "Setu Kathawate",
+        "url": "https://github.com/setugk"
+      },
+      "homepage": "https://github.com/setugk/vite-plugin-specter#readme",
+      "repository": "https://github.com/setugk/vite-plugin-specter",
+      "license": "MIT",
+      "keywords": ["specter", "design", "annotations", "vite", "ui"]
+    }
+  ]
+}

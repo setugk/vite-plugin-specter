@@ -1609,7 +1609,7 @@ export function getClientScript(options: SpecterOptions): string {
     var rows = [
       ['P', 'mark / comment the hovered element'],
       ['C', 'toggle Comment mode (hide properties)'],
-      ['\\u2325 Option', 'toggle Measure mode'],
+      ['\\u2325 Option / Alt', 'toggle Measure mode'],
       ['M', 'pin an element to measure from'],
       ['Cmd/Ctrl+C', 'copy all Specs'],
       ['L', 'toggle this panel'],
@@ -2493,6 +2493,7 @@ export function getClientScript(options: SpecterOptions): string {
   importFromHash(); // if arrived via a #spx= share link, import + reveal the shared comments
   scheduleSync();   // mirror restored Specs to the Claude bridge on load
 
-  console.log('%c👻 Specter — Ctrl+Option+Z to toggle', 'color:#aaa;font-size:11px;');
+  var actLabel = ACTIVATE.split('+').map(function (p) { return p.charAt(0).toUpperCase() + p.slice(1); }).join('+');
+  console.log('%c👻 Specter — ' + actLabel + ' to toggle', 'color:#aaa;font-size:11px;');
 })();`;
 }

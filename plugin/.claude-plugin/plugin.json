@@ -1,0 +1,21 @@
+{
+  "name": "specter",
+  "description": "Pull Specter's browser annotations into Claude Code and implement them. Auto-runs the local Specter bridge and adds the /spectify command plus pop_specs/peek_specs tools.",
+  "version": "0.7.3",
+  "author": {
+    "name": "Setu Kathawate",
+    "email": "dev@setugk.com",
+    "url": "https://github.com/setugk"
+  },
+  "homepage": "https://github.com/setugk/vite-plugin-specter#readme",
+  "repository": "https://github.com/setugk/vite-plugin-specter",
+  "license": "MIT",
+  "keywords": ["specter", "design", "annotations", "vite", "ui", "mcp"],
+  "commands": ["./commands/spectify.md"],
+  "mcpServers": {
+    "specter-bridge": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp-bridge/server.mjs"]
+    }
+  }
+}

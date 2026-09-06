@@ -8,6 +8,7 @@ Specter is a Vite plugin that overlays an element inspector on your dev server. 
 
 - Your project must use **Vite** as its dev server
 - Works with React, Vue, Svelte, or plain HTML served through Vite
+- Works on **macOS, Windows, and Linux** — shortcuts read the physical keys, so Mac's Option = Windows/Linux Alt, and Cmd+C = Ctrl+C
 
 ## Install
 
@@ -46,7 +47,9 @@ If you ever need Specter gone entirely, remove `specter()` from the Vite config 
 
 ### Toggle on/off
 
-Press **Ctrl+Option+Z** to activate Specter. A small zap icon appears at the bottom-left. Press again (or **Esc**) to hide it — your Specs are kept and reappear when you reactivate.
+Press **Ctrl+Alt+Z** to activate Specter (on a Mac the Alt key is labelled **Option**, so it's Ctrl+Option+Z — same keys). A small zap icon appears at the bottom-left. Press again (or **Esc**) to hide it — your Specs are kept and reappear when you reactivate.
+
+**Shortcut taken by your browser?** Some setups bind `Ctrl+Alt+Z` (e.g. a Firefox side-panel extension). You can change Specter's toggle to any chord — see [Configuration](#configuration). There's no single browser shortcut that's free everywhere, so the toggle is fully configurable rather than fixed.
 
 ### Three modes
 
@@ -55,7 +58,7 @@ Specter has three modes; switching mode only changes *what's shown on screen* �
 | Mode | Enter | Shows |
 |------|-------|-------|
 | **Properties** (default) | — | Styles tooltip on hover |
-| **Measure** | tap **Option** | Figma-style spacing to neighbors |
+| **Measure** | tap **Option / Alt** | Figma-style spacing to neighbors |
 | **Comment** | **C** | Just an outline — for clean design review |
 
 ### Inspect an element (Properties mode)
@@ -71,7 +74,7 @@ Specter has three modes; switching mode only changes *what's shown on screen* �
 
 ### Measure spacing (Measure mode)
 
-Tap **Option** to switch to Measure mode. Hover any element to see distances to its surrounding neighbors. Press **M** while hovering to **pin** that element, then hover another to measure the gap or inset between the two; **M** again unpins. Tap **Option** again to return to Properties.
+Tap **Option / Alt** to switch to Measure mode. Hover any element to see distances to its surrounding neighbors. Press **M** while hovering to **pin** that element, then hover another to measure the gap or inset between the two; **M** again unpins. Tap **Option / Alt** again to return to Properties.
 
 ### Mark a Spec (and optionally annotate)
 
@@ -87,7 +90,7 @@ Press **L** to open the Specs review panel. It lists every Spec; hover a row to 
 
 ### Copy to your AI
 
-Press **Cmd+C**:
+Press **Cmd+C** (**Ctrl+C** on Windows/Linux):
 
 - **With Specs marked** → copies **all** of them at once. Each block leads with your `✏️ CHANGE:` note (if any).
 - **With nothing marked** → copies the hovered element's properties (or, in Measure mode, the measurement).
@@ -129,15 +132,17 @@ Specs aren't only for your AI — you can send them to a **person**. Mark commen
 
 | Action | Shortcut |
 |--------|----------|
-| Toggle Specter | **Ctrl+Option+Z** |
+| Toggle Specter | **Ctrl+Alt+Z** (Ctrl+Option+Z on Mac) |
 | Inspect element | Hover (while active) |
 | Mark a Spec (+ optional note) | **P** |
-| Copy (all Specs, or hovered element) | **Cmd+C** |
-| Measure mode (toggle) | **Option** (tap) |
+| Copy (all Specs, or hovered element) | **Cmd+C** / **Ctrl+C** |
+| Measure mode (toggle) | **Option / Alt** (tap) |
 | Pin / unpin for measuring | **M** (in Measure mode) |
 | Comment mode (toggle) | **C** |
 | Specs panel (toggle) | **L** |
 | Close panel / hide Specter | **Esc** |
+
+> **Mac / Windows / Linux** — the keys are the same everywhere; only the labels differ. Mac's **Option** key is **Alt** on Windows/Linux, and **Cmd+C** is **Ctrl+C**. Specter reads the physical modifier, so every shortcut works on all three.
 
 ## Optional: push Specs straight to Claude Code (`/spectify`)
 
@@ -147,7 +152,22 @@ Instead of copy-paste, Specter can auto-sync your Specs to a local bridge that C
 specter({ claudeBridge: true })
 ```
 
-With it on, every Spec you mark auto-syncs (watch for the sync dot in the panel) to a local bridge at `http://127.0.0.1:8787`. Run the bridge (`node node_modules/vite-plugin-specter/mcp-bridge/server.mjs`, or register it in your project's `.mcp.json` so your IDE launches it), then in Claude Code run **`/spectify`** — it pulls whatever's currently synced and implements it. See [`mcp-bridge/`](https://github.com/setugk/vite-plugin-specter/tree/main/mcp-bridge) for setup. One bridge can serve several projects; `/spectify <port>` scopes to one.
+With it on, every Spec you mark auto-syncs (watch for the sync dot in the panel) to a local bridge at `http://127.0.0.1:8787`, and Claude Code pulls from it — no copy-paste.
+
+### Recommended: install the Claude Code plugin
+
+The plugin bundles the `/spectify` command **and** the bridge as an MCP server, so Claude Code launches the bridge for you — nothing to run in a terminal:
+
+```
+/plugin marketplace add setugk/vite-plugin-specter
+/plugin install specter@specter
+```
+
+Then in Claude Code just run **`/spectify`** (or say "apply my Specter notes" — the plugin also exposes `pop_specs`/`peek_specs` tools). One bridge can serve several projects; `/spectify <port>` scopes to one.
+
+### Manual (no plugin)
+
+Prefer not to install the plugin? Run the bridge yourself and drop the command in by hand — see [`mcp-bridge/`](https://github.com/setugk/vite-plugin-specter/tree/main/mcp-bridge) for the `server.mjs` + `spectify.md`.
 
 `claudeBridge` is **off by default** — the shipped plugin never opens a connection unless you enable it.
 
