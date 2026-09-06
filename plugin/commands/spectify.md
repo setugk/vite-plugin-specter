@@ -33,4 +33,6 @@ Now act on it:
   3. Implement the change in the source.
 
 Work through them in order. When done, summarize what you changed per Spec (`#n → file:line`),
-and flag any Spec whose element you couldn't confidently locate rather than guessing.
+and flag any Spec whose element you couldn't confidently locate rather than guessing. Then tell
+the user to mark the applied Specs as **done (✓)** in the Specter panel — resolved Specs drop out
+of the sync, so a later `/spectify` won't re-apply what's already shipped.

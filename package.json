@@ -1,6 +1,6 @@
 {
   "name": "vite-plugin-specter",
-  "version": "0.7.3",
+  "version": "0.7.5",
   "description": "Inspect elements and Figma-style measure spacing in your vibe-coded Vite projects. Give your AI exactly what it needs to make the right change.",
   "author": "Setu Kathawate <dev@setugk.com>",
   "homepage": "https://github.com/setugk/vite-plugin-specter#readme",
@@ -24,7 +24,8 @@
   },
   "files": [
     "dist",
-    "extension"
+    "extension",
+    "mcp-bridge"
   ],
   "scripts": {
     "build": "tsup && node scripts/build-client.mjs && node scripts/build-extension.mjs",

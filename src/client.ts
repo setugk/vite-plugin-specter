@@ -31,7 +31,17 @@ export function getClientScript(options: SpecterOptions): string {
   var CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
   var SHARE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path><polyline points="16 6 12 2 8 6"></polyline><line x1="12" y1="2" x2="12" y2="15"></line></svg>';
   var IMPORT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"></path><polyline points="8 12 12 16 16 12"></polyline><path d="M4 21h16"></path></svg>';
-  var ACTIVATE = ${JSON.stringify(activateShortcut)};
+  // Toggle chord: the Vite-config value (or the built-in default) is the baseline; a
+  // per-origin localStorage override — set from the panel's rebind UI or window.__specter —
+  // wins, so anyone can change it with no config edit and no dev-server restart.
+  var ACTIVATE_DEFAULT = ${JSON.stringify(activateShortcut)};
+  var ACTIVATE_KEY = '__specter_activate';
+  var ACTIVATE = ACTIVATE_DEFAULT;
+  try { var _actOv = localStorage.getItem(ACTIVATE_KEY); if (_actOv) ACTIVATE = _actOv; } catch (e) {}
+  function shortcutLabel(s) { return String(s || '').split('+').map(function (p) { return p.charAt(0).toUpperCase() + p.slice(1); }).join('+'); }
+  function setActivate(combo) { ACTIVATE = combo; try { localStorage.setItem(ACTIVATE_KEY, combo); } catch (e) {} }
+  function resetActivate() { ACTIVATE = ACTIVATE_DEFAULT; try { localStorage.removeItem(ACTIVATE_KEY); } catch (e) {} }
+  function activateOverridden() { try { return !!localStorage.getItem(ACTIVATE_KEY); } catch (e) { return false; } }
   var BRIDGE = ${JSON.stringify(bridgeUrl)}; // Claude MCP bridge URL, or '' if disabled
 
   // ─── State ────────────────────────────────────────────────────────────────
@@ -689,6 +699,7 @@ export function getClientScript(options: SpecterOptions): string {
     var groups = [];
     for (var i = 0; i < specs.length; i++) {
       var s = specs[i], g = null;
+      if (s.resolved) continue; // done Specs drop out of both the Cmd+C copy and the bridge sync — so /spectify never re-applies them
       if (s.kind === 'element' && s.el) {
         for (var j = 0; j < groups.length; j++) { if (groups[j].kind === 'element' && groups[j].el === s.el) { g = groups[j]; break; } }
       }
@@ -929,10 +940,17 @@ export function getClientScript(options: SpecterOptions): string {
   function startLoop() { if (rafId == null) (function loop() { reflowSpecs(); rafId = requestAnimationFrame(loop); })(); }
   function stopLoop() { if (rafId != null) { cancelAnimationFrame(rafId); rafId = null; } }
 
-  function renumber() { for (var i = 0; i < specs.length; i++) specs[i].num.textContent = String(i + 1); }
+  // Paint a badge's number/✓ + done tint. Called by renumber and updateBadgeContent so
+  // the on-page pin reflects resolved state everywhere (reflowSpecs never touches these).
+  function paintBadgeState(spec, i) {
+    spec.num.textContent = String(i + 1); // always the number (for wayfinding) — green tint carries the "done" signal
+    if (spec.cap) { spec.cap.style.background = spec.resolved ? GREEN : PURPLE; spec.cap.style.opacity = spec.resolved ? '0.65' : '1'; }
+  }
+
+  function renumber() { for (var i = 0; i < specs.length; i++) paintBadgeState(specs[i], i); }
 
   function updateBadgeContent(spec) {
-    spec.num.textContent = String(specs.indexOf(spec) + 1);
+    paintBadgeState(spec, specs.indexOf(spec));
     if (spec.note) spec.noteSpan.textContent = spec.note;
     else spec.noteSpan.textContent = spec.kind === 'measure' ? '⬡ measure' : '';
   }
@@ -1054,6 +1072,33 @@ export function getClientScript(options: SpecterOptions): string {
     saveSpecs();
   }
 
+  // ── Resolved (done) lifecycle ────────────────────────────────────────────────
+  // A resolved Spec is NOT deleted — it stays as a record of what changed, greyed with
+  // a ✓, and drops out of the copy + bridge sync (see groupSpecs) so it's never re-applied.
+  function resolvedCount() { var n = 0; for (var i = 0; i < specs.length; i++) if (specs[i].resolved) n++; return n; }
+
+  function toggleResolved(spec) {
+    spec.resolved = !spec.resolved;
+    if (spec.resolved && panelEditSpec === spec) panelEditSpec = null; // close an open editor on the one being marked done
+    updateBadgeContent(spec);
+    updatePill();      // re-renders the panel when open
+    saveSpecs();       // persists resolved + re-syncs the bridge (now excluding it)
+  }
+
+  // Sweep every resolved Spec once the user is satisfied — leaves open Specs untouched.
+  function clearResolved() {
+    for (var i = specs.length - 1; i >= 0; i--) {
+      if (!specs[i].resolved) continue;
+      if (highlightSpec === specs[i]) highlightSpec = null;
+      if (panelEditSpec === specs[i]) panelEditSpec = null;
+      if (specs[i].wrap) specs[i].wrap.remove();
+      specs.splice(i, 1);
+    }
+    renumber();
+    updatePill();
+    saveSpecs();
+  }
+
   // Drop every imported (shared) spec, leaving the user's own local ones. Used by
   // importComments so a received share replaces the prior set instead of stacking.
   function removeSharedSpecs() {
@@ -1070,7 +1115,7 @@ export function getClientScript(options: SpecterOptions): string {
   function saveSpecs() {
     try {
       if (!specs.length) localStorage.removeItem(STORAGE_KEY);
-      else localStorage.setItem(STORAGE_KEY, JSON.stringify(specs.map(function (s) { return { path: s.path, note: s.note, body: s.body, kind: s.kind, locate: s.locate, shared: s.shared, fp: s.fp, missing: s.missing, missReason: s.missReason }; })));
+      else localStorage.setItem(STORAGE_KEY, JSON.stringify(specs.map(function (s) { return { path: s.path, note: s.note, body: s.body, kind: s.kind, locate: s.locate, shared: s.shared, fp: s.fp, missing: s.missing, missReason: s.missReason, resolved: s.resolved }; })));
     } catch (e) {}
     scheduleSync(); // keep the Claude bridge mirrored to the current Specs
   }
@@ -1080,7 +1125,7 @@ export function getClientScript(options: SpecterOptions): string {
     try { data = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch (e) { return; }
     if (!Array.isArray(data) || !data.length) return;
     data.forEach(function (d) {
-      var spec = { el: d.missing ? null : safeQuery(d.path), path: d.path, note: d.note || '', body: d.body || '', kind: d.kind || 'element', locate: d.locate || '', shared: !!d.shared, fp: d.fp || '', missing: !!d.missing, missReason: d.missReason || '' };
+      var spec = { el: d.missing ? null : safeQuery(d.path), path: d.path, note: d.note || '', body: d.body || '', kind: d.kind || 'element', locate: d.locate || '', shared: !!d.shared, fp: d.fp || '', missing: !!d.missing, missReason: d.missReason || '', resolved: !!d.resolved };
       specs.push(spec);
       createBadge(spec);
     });
@@ -1625,6 +1670,45 @@ export function getClientScript(options: SpecterOptions): string {
     head.appendChild(headText);
     var body = document.createElement('div');
     Object.assign(body.style, { display: 'none', padding: '0 16px 12px' }); // collapsed by default
+
+    // Rebindable toggle shortcut — the one chord you might have to change if it collides
+    // with a browser/extension binding. Click Change, press a new combo. Saved per origin,
+    // no restart. Works identically in the Vite plugin overlay and the browser extension.
+    (function () {
+      var rrow = document.createElement('div');
+      Object.assign(rrow.style, { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', paddingBottom: '10px', borderBottom: '1px solid rgba(255,255,255,0.06)' });
+      var chip = document.createElement('span');
+      Object.assign(chip.style, { color: '#E0A3F5', fontWeight: '700', minWidth: '78px', flexShrink: '0' });
+      var lbl = document.createElement('span');
+      Object.assign(lbl.style, { flex: '1', minWidth: '0' });
+      lbl.textContent = 'toggle Specter on/off';
+      var change = document.createElement('span');
+      Object.assign(change.style, { color: '#8AB4F8', cursor: 'pointer', flexShrink: '0', textDecoration: 'underline' });
+      change.textContent = 'Change';
+      var reset = document.createElement('span');
+      Object.assign(reset.style, { color: '#B9BBC2', cursor: 'pointer', flexShrink: '0', textDecoration: 'underline', display: 'none' });
+      reset.textContent = 'Reset';
+      function refresh() {
+        chip.textContent = shortcutLabel(ACTIVATE);
+        chip.style.color = '#E0A3F5';
+        change.style.display = 'inline';
+        reset.style.display = activateOverridden() ? 'inline' : 'none';
+      }
+      change.addEventListener('click', function (e) {
+        e.stopPropagation();
+        change.style.display = 'none';
+        reset.style.display = 'none';
+        startRebind(
+          function (text, color) { chip.textContent = text; chip.style.color = color; },
+          function () { refresh(); }
+        );
+      });
+      reset.addEventListener('click', function (e) { e.stopPropagation(); resetActivate(); refresh(); });
+      refresh();
+      rrow.appendChild(chip); rrow.appendChild(lbl); rrow.appendChild(change); rrow.appendChild(reset);
+      body.appendChild(rrow);
+    })();
+
     rows.forEach(function (r) {
       var row = document.createElement('div');
       Object.assign(row.style, { display: 'flex', gap: '8px', marginBottom: '8px' });
@@ -1647,20 +1731,48 @@ export function getClientScript(options: SpecterOptions): string {
     panelKeys.appendChild(body);
   })();
 
+  // Footer — a quiet link out to the GitHub README so first-timers can find the docs.
+  var panelFoot = document.createElement('div');
+  Object.assign(panelFoot.style, {
+    flexShrink: '0', padding: '10px 16px', borderTop: '1px solid rgba(255,255,255,0.08)',
+    display: 'flex', alignItems: 'center',
+  });
+  var docsLink = document.createElement('a');
+  docsLink.href = 'https://github.com/setugk/vite-plugin-specter#readme';
+  docsLink.target = '_blank';
+  docsLink.rel = 'noopener noreferrer';
+  docsLink.textContent = 'Documentation \\u2197'; // ↗
+  Object.assign(docsLink.style, { fontSize: '11px', fontWeight: '600', color: '#8AB4F8', textDecoration: 'none', cursor: 'pointer' });
+  hoverFx(docsLink, { color: '#fff' }, { color: '#8AB4F8' });
+  docsLink.addEventListener('click', function (e) { e.stopPropagation(); });
+  panelFoot.appendChild(docsLink);
+
   panelWrap.appendChild(panelHead);
   panelWrap.appendChild(panelTools);
   panelWrap.appendChild(panelHint);
   panelWrap.appendChild(panelList);
   panelWrap.appendChild(panelKeys);
+  panelWrap.appendChild(panelFoot);
   mount(panelWrap);
 
-  // Panel scroll and page scroll are mutually exclusive: wheel over the scrollable list
-  // scrolls it natively (overscroll-behavior:contain stops it chaining at the bounds);
-  // wheel over any non-scrolling part of the panel never scrolls the page behind it.
+  // A wheel anywhere over the panel must NEVER scroll the page behind it. Relying on
+  // overscroll-behavior alone still lets trackpad momentum chain into the page at the
+  // list bounds, so we take over: always swallow the event, and drive the list's own
+  // scroll ourselves. (The inline note editor auto-grows instead of scrolling, so the
+  // list is the only scrollable region inside the panel — nothing else needs the wheel.)
+  var listScrolling = false, listScrollTimer = null;
   panelWrap.addEventListener('wheel', function (e) {
-    var canScroll = panelList.scrollHeight > panelList.clientHeight;
-    if (panelList.contains(e.target) && canScroll) return; // let the list scroll natively
     e.preventDefault();
+    if (panelList.scrollHeight > panelList.clientHeight && panelList.contains(e.target)) {
+      var dy = e.deltaMode === 1 ? e.deltaY * 16 : (e.deltaMode === 2 ? e.deltaY * panelList.clientHeight : e.deltaY);
+      panelList.scrollTop += dy;
+      // Rows slide under a stationary cursor as the list scrolls, firing mouseenter →
+      // revealSpec → scrollIntoView, which would drag the PAGE around. Mark the list as
+      // actively scrolling so those hover-reveals are suppressed until scrolling settles.
+      listScrolling = true;
+      clearTimeout(listScrollTimer);
+      listScrollTimer = setTimeout(function () { listScrolling = false; }, 200);
+    }
   }, { passive: false });
 
   // ── Auto-sync: mirror the browser's current Specs to the local bridge ──
@@ -1673,7 +1785,7 @@ export function getClientScript(options: SpecterOptions): string {
     setPillSync(s);     // control-bar dot
     applyDotState(dot, s); // side-panel dot — same spinner/green/red
     if (s === 'syncing') { dotLabel.textContent = 'Syncing…'; }
-    else if (s === 'synced') { dotLabel.textContent = specs.length ? (specs.length + (specs.length === 1 ? ' Spec synced' : ' Specs synced')) : 'Synced'; }
+    else if (s === 'synced') { var open = specs.length - resolvedCount(); dotLabel.textContent = open > 0 ? (open + (open === 1 ? ' Spec synced' : ' Specs synced')) : 'Synced'; }
     else { dotLabel.textContent = 'Bridge offline'; }
   }
   function doSync() {
@@ -1720,11 +1832,28 @@ export function getClientScript(options: SpecterOptions): string {
       panelList.appendChild(empty);
       return;
     }
+    // Summary of resolved Specs + a one-click sweep, pinned above the list.
+    var rc = resolvedCount();
+    if (rc > 0) {
+      var doneBar = document.createElement('div');
+      Object.assign(doneBar.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', padding: '8px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)' });
+      var dlbl = document.createElement('span');
+      dlbl.textContent = '✓ ' + rc + (rc === 1 ? ' done' : ' done');
+      Object.assign(dlbl.style, { fontSize: '11px', color: GREEN, fontWeight: '700', letterSpacing: '0.04em', textTransform: 'uppercase' });
+      var clr = document.createElement('span');
+      clr.textContent = 'Clear done';
+      Object.assign(clr.style, { fontSize: '11px', color: '#B9BBC2', cursor: 'pointer', textDecoration: 'underline' });
+      clr.addEventListener('click', function (e) { e.stopPropagation(); clearResolved(); });
+      hoverFx(clr, { color: '#fff' }, { color: '#B9BBC2' });
+      doneBar.appendChild(dlbl); doneBar.appendChild(clr);
+      panelList.appendChild(doneBar);
+    }
     var focusEditor = null, measures = [];
     specs.forEach(function (spec, i) {
       var missing = !!spec.missing;
       var visible = missing ? false : specVisible(spec); // don't specVisible() a missing spec — it would re-anchor via path
       var editing = (panelEditSpec === spec);
+      var resolved = !!spec.resolved;
       var row = document.createElement('div');
       Object.assign(row.style, {
         position: 'relative', display: 'flex', alignItems: 'flex-start', gap: '12px', boxSizing: 'border-box',
@@ -1735,7 +1864,7 @@ export function getClientScript(options: SpecterOptions): string {
       badge.textContent = String(i + 1);
       Object.assign(badge.style, {
         flexShrink: '0', width: '20px', height: '20px', borderRadius: '999px',
-        background: BADGE_IDLE, color: '#fff', fontSize: '11px', fontWeight: '700',
+        background: resolved ? GREEN : BADGE_IDLE, color: '#fff', fontSize: '11px', fontWeight: '700',
         border: '1px solid #fff', boxSizing: 'border-box',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         transition: 'background 0.12s ease',
@@ -1807,6 +1936,7 @@ export function getClientScript(options: SpecterOptions): string {
           cursor: spec.note ? 'pointer' : 'default',
         });
         note.textContent = spec.note || (spec.kind === 'measure' ? '⬡ measurement' : '— no note —');
+        if (resolved) { note.style.textDecoration = 'line-through'; note.style.color = LABEL; note.style.cursor = spec.note ? 'pointer' : 'default'; }
 
         // Floated into the top-right corner so they don't reserve note width. On hover
         // they get a background that fades in from the left, masking the note text behind
@@ -1825,11 +1955,14 @@ export function getClientScript(options: SpecterOptions): string {
         // Show an expand toggle only when the collapsed note actually overflows.
         var chev = mkIcon(CHEV, expanded ? 'Collapse' : 'Expand', '#B9BBC2', function () { spec._expanded = !spec._expanded; renderPanel(); });
         chev.firstChild.style.transform = expanded ? 'rotate(180deg)' : 'rotate(0deg)';
+        var resolveBtn = mkIcon(CHECK, resolved ? 'Mark as not done' : 'Mark as done', resolved ? GREEN : '#9BE6B0', function () { toggleResolved(spec); }, { background: 'rgba(34,197,94,0.28)', color: '#fff' });
         var editBtn = mkIcon(PENCIL, 'Edit note', '#B9BBC2', function () { panelEditSpec = spec; spec._expanded = true; renderPanel(); });
         var delBtn = mkIcon(TRASH, 'Delete Spec', '#ED8FA6', function () { removeSpec(spec); }, { background: 'rgba(237,62,97,0.30)', color: '#fff' });
-        // Edit + delete reveal only on row hover; the expand chevron stays rightmost
-        // and fixed (edit/delete appear to its left, so it never shifts).
-        editBtn.style.display = delBtn.style.display = 'none';
+        // ✓ / edit / delete all reveal only on row hover (the expand chevron stays rightmost
+        // and fixed). The done state reads from the green badge + strikethrough + "✓ DONE",
+        // so the row needs no persistent icon — it looks like any other list item.
+        editBtn.style.display = delBtn.style.display = resolveBtn.style.display = 'none';
+        actions.appendChild(resolveBtn);
         actions.appendChild(editBtn);
         actions.appendChild(delBtn);
         actions.appendChild(chev);
@@ -1837,9 +1970,27 @@ export function getClientScript(options: SpecterOptions): string {
         content.appendChild(note);
         content.appendChild(meta);
 
+        // Done: a green DONE tag + dimmed row. Supersedes HIDDEN/MISSING — once a Spec is
+        // resolved you don't care whether its element is currently on screen.
+        if (resolved) {
+          row.style.opacity = '0.6';
+          var rbar = document.createElement('div');
+          Object.assign(rbar.style, { display: 'flex', alignItems: 'center', gap: '5px', marginTop: '2px', flexWrap: 'wrap' });
+          var rcheck = document.createElement('span');
+          rcheck.innerHTML = CHECK;
+          Object.assign(rcheck.style, { display: 'inline-flex', alignItems: 'center', color: GREEN, flexShrink: '0' });
+          if (rcheck.firstChild) { rcheck.firstChild.setAttribute('width', '12'); rcheck.firstChild.setAttribute('height', '12'); }
+          var rtag = document.createElement('span');
+          rtag.textContent = 'DONE';
+          // Text-only status label (no fill/padding/radius) so it doesn't read as a clickable chip.
+          Object.assign(rtag.style, { fontSize: '10px', fontWeight: '700', letterSpacing: '0.08em', textTransform: 'uppercase', color: GREEN, flexShrink: '0' });
+          rbar.appendChild(rcheck);
+          rbar.appendChild(rtag);
+          content.appendChild(rbar);
+        }
         // Shared comment whose target is gone/changed: MISSING (greyed, reason shown,
         // never drawn on the page — design: show missing, don't guess a spot).
-        if (missing) {
+        else if (missing) {
           row.style.opacity = '0.7';
           var mbar = document.createElement('div');
           Object.assign(mbar.style, { display: 'flex', alignItems: 'center', gap: '7px', marginTop: '2px', flexWrap: 'wrap' });
@@ -1876,15 +2027,15 @@ export function getClientScript(options: SpecterOptions): string {
         note.addEventListener('click', function (e) { if (spec.note) { e.stopPropagation(); spec._expanded = !spec._expanded; renderPanel(); } });
         row.addEventListener('mouseenter', function () {
           row.style.background = 'rgba(255,255,255,0.05)';
-          badge.style.background = PURPLE;
-          editBtn.style.display = delBtn.style.display = 'flex';
+          if (!resolved) badge.style.background = PURPLE;
+          editBtn.style.display = delBtn.style.display = resolveBtn.style.display = 'flex';
           actions.style.background = 'linear-gradient(to right, rgba(52,54,60,0) 0, rgba(52,54,60,1) 22px)';
-          if (visible) { highlightSpec = spec; revealSpec(spec); }
+          if (visible && !listScrolling) { highlightSpec = spec; revealSpec(spec); } // don't reveal on rows that merely slid under the cursor while scrolling
         });
         row.addEventListener('mouseleave', function () {
           row.style.background = 'transparent';
-          badge.style.background = BADGE_IDLE;
-          editBtn.style.display = delBtn.style.display = 'none';
+          badge.style.background = resolved ? GREEN : BADGE_IDLE;
+          editBtn.style.display = delBtn.style.display = resolveBtn.style.display = 'none';
           actions.style.background = 'transparent';
           if (highlightSpec === spec) highlightSpec = null;
         });
@@ -2312,6 +2463,41 @@ export function getClientScript(options: SpecterOptions): string {
     return eKey === key || eCode === 'key' + key || (key === 'period' && (eKey === '.' || eCode === 'period'));
   }
 
+  // Capture the next chord the user presses and make it the new toggle. Runs on the
+  // capture phase + stops propagation so a rebind keystroke (e.g. "L") can't leak into
+  // Specter's own shortcuts. Requires at least one modifier so the toggle can't be a bare
+  // key that fires while you type. onState(text, color) drives the prompt; onDone(committed).
+  var rebinding = false;
+  function startRebind(onState, onDone) {
+    if (rebinding) return;
+    rebinding = true;
+    onState('Press a key combo…', GREEN);
+    function cap(e) {
+      e.preventDefault(); e.stopPropagation();
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+      var k = e.key;
+      if (k === 'Escape') { finish(false); return; }
+      if (k === 'Control' || k === 'Alt' || k === 'Shift' || k === 'Meta') return; // wait for the real key
+      var parts = [];
+      if (e.ctrlKey) parts.push('ctrl');
+      if (e.altKey) parts.push('alt');
+      if (e.shiftKey) parts.push('shift');
+      if (e.metaKey) parts.push('meta');
+      if (!parts.length) { onState('Hold Ctrl / Alt / \\u2318 too…', '#F59E0B'); return; }
+      var key = (e.key.length === 1 ? e.key : e.code.replace(/^Key/, '')).toLowerCase();
+      if (!key) return;
+      parts.push(key);
+      setActivate(parts.join('+'));
+      finish(true);
+    }
+    function finish(committed) {
+      document.removeEventListener('keydown', cap, true);
+      rebinding = false;
+      onDone(committed);
+    }
+    document.addEventListener('keydown', cap, true);
+  }
+
   // ─── Mouse ────────────────────────────────────────────────────────────────
   function onMouseMove(e) {
     if (!fiActive) return;
@@ -2493,7 +2679,20 @@ export function getClientScript(options: SpecterOptions): string {
   importFromHash(); // if arrived via a #spx= share link, import + reveal the shared comments
   scheduleSync();   // mirror restored Specs to the Claude bridge on load
 
-  var actLabel = ACTIVATE.split('+').map(function (p) { return p.charAt(0).toUpperCase() + p.slice(1); }).join('+');
-  console.log('%c👻 Specter — ' + actLabel + ' to toggle', 'color:#aaa;font-size:11px;');
+  // Dev-only console API — the escape hatch when the toggle chord collides with a browser
+  // shortcut so you can't even open the overlay. Specter is stripped from prod, so this
+  // global never ships. Vite devs can run these straight from DevTools.
+  try {
+    window.__specter = {
+      toggle: function () { if (fiActive) deactivate(); else activate(); },
+      activate: activate,
+      deactivate: deactivate,
+      get shortcut() { return ACTIVATE; },
+      setShortcut: function (combo) { if (combo) { setActivate(String(combo).toLowerCase()); if (panelOpen) renderPanel(); console.log('%c👻 Specter — toggle is now ' + shortcutLabel(ACTIVATE), 'color:#aaa'); } return ACTIVATE; },
+      resetShortcut: function () { resetActivate(); if (panelOpen) renderPanel(); console.log('%c👻 Specter — toggle reset to ' + shortcutLabel(ACTIVATE), 'color:#aaa'); return ACTIVATE; },
+    };
+  } catch (e) {}
+
+  console.log('%c👻 Specter — ' + shortcutLabel(ACTIVATE) + ' to toggle · change it: window.__specter.setShortcut("ctrl+alt+p")', 'color:#aaa;font-size:11px;');
 })();`;
 }

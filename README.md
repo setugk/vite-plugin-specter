@@ -49,7 +49,7 @@ If you ever need Specter gone entirely, remove `specter()` from the Vite config 
 
 Press **Ctrl+Alt+Z** to activate Specter (on a Mac the Alt key is labelled **Option**, so it's Ctrl+Option+Z — same keys). A small zap icon appears at the bottom-left. Press again (or **Esc**) to hide it — your Specs are kept and reappear when you reactivate.
 
-**Shortcut taken by your browser?** Some setups bind `Ctrl+Alt+Z` (e.g. a Firefox side-panel extension). You can change Specter's toggle to any chord — see [Configuration](#configuration). There's no single browser shortcut that's free everywhere, so the toggle is fully configurable rather than fixed.
+**Shortcut taken by your browser?** Some setups bind `Ctrl+Alt+Z` (e.g. a Firefox side-panel extension). You can rebind Specter's toggle to any chord in seconds — from the overlay (**L** → Keyboard shortcuts → **Change**) or the DevTools console (`window.__specter.setShortcut('ctrl+alt+p')`), no config edit or restart. See [Change the toggle shortcut](#change-the-toggle-shortcut-without-touching-config). There's no chord that's free in every browser, so it's fully rebindable rather than fixed.
 
 ### Three modes
 
@@ -179,7 +179,20 @@ specter({ shortcuts: { activate: 'ctrl+shift+i' } })  // custom activate shortcu
 specter({ claudeBridge: true })                       // enable the Claude Code bridge
 ```
 
-The `activate` shortcut accepts any combination of `ctrl`, `alt`, `shift`, `meta`/`cmd`, and a key. Default is `ctrl+alt+z`.
+The `activate` shortcut accepts any combination of `ctrl`, `alt`, `shift`, `meta`/`cmd`, and a key. Default is `ctrl+alt+z`. This value is just the **default** — see below for changing it live.
+
+### Change the toggle shortcut without touching config
+
+The `vite.config` value is only the starting point. To rebind on the fly (no config edit, no restart):
+
+- **In the overlay** — open the Specs panel (**L**), expand **Keyboard shortcuts**, and hit **Change** next to the toggle. Press your new combo. It's saved per site in `localStorage` and overrides the config default; **Reset** returns to the default.
+- **From the DevTools console** — handy if your current chord collides with a browser shortcut and you *can't* open the overlay:
+  ```js
+  window.__specter.setShortcut('ctrl+alt+p')  // rebind
+  window.__specter.toggle()                    // open/close Specter
+  window.__specter.resetShortcut()             // back to the config default
+  ```
+  (`window.__specter` is dev-only and, like the rest of Specter, never ships to production.)
 
 ## Optional: `data-style` attribute
 

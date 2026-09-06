@@ -10,7 +10,7 @@
       "name": "specter",
       "source": "./plugin",
       "description": "Pull Specter's browser annotations into Claude Code and implement them. Auto-runs the local bridge and adds /spectify.",
-      "version": "0.7.3",
+      "version": "0.7.5",
       "author": {
         "name": "Setu Kathawate",
         "url": "https://github.com/setugk"

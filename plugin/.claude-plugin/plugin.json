@@ -1,7 +1,7 @@
 {
   "name": "specter",
   "description": "Pull Specter's browser annotations into Claude Code and implement them. Auto-runs the local Specter bridge and adds the /spectify command plus pop_specs/peek_specs tools.",
-  "version": "0.7.3",
+  "version": "0.7.5",
   "author": {
     "name": "Setu Kathawate",
     "email": "dev@setugk.com",
